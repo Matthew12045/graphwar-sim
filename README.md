@@ -1,0 +1,112 @@
+# Graphwar — Python reimplementation
+
+A headless, faithful reimplementation of the artillery game **Graphwar**, in
+which a shot's trajectory is the graph of a function `y = f(x)` typed by the
+player. The goal is to reproduce the behavior of the original Java client
+(`ref/graphwar/`, GPL-licensed) closely enough to (a) run reproducible games
+and (b) later plug in LLM agents and evaluate them.
+
+This is **Milestone M1**: a headless simulator plus a golden-test suite that
+checks the Python physics against the compiled Java reference, shot for shot.
+
+## Status
+
+| Milestone | Scope | Status |
+|-----------|-------|--------|
+| M0 | Ground truth from the Java source | ✅ done — see `docs/GROUND_TRUTH.md` |
+| M1 | Headless simulator + golden tests | ✅ done — see below |
+| M2 | Deterministic solver | ⏳ |
+| M3 | LLM agents (security review first) | ⏳ |
+| M4 | Eval harness | ⏳ |
+
+## Scope
+
+Only **NORMAL_FUNC** mode is in scope: the trajectory is `y = f(x)`. The two
+ODE modes (FST_ODE / SND_ODE) are out of scope for M1.
+
+## License & clean-room position
+
+The reference implementation is licensed under **GPLv3** and lives in
+`ref/graphwar/` (a separately-cloned git repo, excluded from this repository's
+VCS via `.gitignore`).
+
+This project is a **clean-room reimplementation**:
+
+- We **cite** the Java source (`file:line`) to document *what* the behavior is,
+  but we do **not copy** its code. Each Python module carries comments naming
+  the Java method and line range it ports.
+- No GPL-licensed code is included in this repository.
+- The Python code in this repository is released under **MIT** (see
+  `pyproject.toml`).
+
+This keeps the two codebases legally separable: the reference is cited as a
+specification, not vendored.
+
+## Layout
+
+```
+graphwar_sim/
+  config.py    # constants + token types, each cited to Java file:line
+  parser.py    # prefix-notation function parser/evaluator (no eval/exec)
+  physics.py   # process_function_range: the shot integration + hit test
+  state.py     # Game / GameState / Team: turn order, win rule, seeded map
+  render.py    # headless matplotlib rendering (terrain, soldiers, trajectory)
+tools/
+  golden/Graphwar/GoldenShot.java   # in-reference harness that dumps shots as JSON
+  jar_probe/                        # one-off terrain probes
+tests/
+  golden/    # ≥20 scenarios compared against graphwar.jar output
+docs/
+  GROUND_TRUTH.md   # M0: the behavior spec with file:line citations
+  OPEN_QUESTIONS.md # reported divergences & carried-forward assumptions
+```
+
+## Install
+
+```bash
+python3 -m pip install -e ".[dev]"
+```
+
+Requires Python 3.11+, `numpy`, `scipy`, `matplotlib`. Dev extras add
+`pytest`, `ruff`, `mypy`.
+
+## Running the golden tests
+
+The golden tests compare the Python simulator's shot output against the Java
+reference. Two parts:
+
+1. **Reference capture** (needs a JVM + the reference build).
+   `tools/golden/Graphwar/GoldenShot.java` is compiled into the reference's
+   `bin/` and, for each scenario, fires one shot through the reference
+   `Function.processFunctionRange`, printing the result as a JSON line (and,
+   when terrain circles are present, the exact `collidePoint` grid).
+   `tools/golden/generate_golden.py` drives it and writes the captured
+   reference results to `tests/golden/data/golden.json`.
+
+   ```bash
+   python3 tools/golden/generate_golden.py
+   ```
+
+2. **Parity check** (pure Python, no JVM). The pytest suite in
+   `tests/golden/` replays each scenario's inputs in Python and asserts parity
+   against the checked-in `golden.json` on `numSteps`, `lastX`/`lastY`, the hit
+   list, and the full trajectory.
+
+   ```bash
+   pytest tests/golden/
+   ```
+
+Because the reference output is checked in, `pytest tests/golden/` runs without
+a JVM. Re-run step 1 only to regenerate the reference after the reference
+changes.
+
+**Divergence is reported, not tuned away.** If a golden test diverges from the
+reference, the difference is recorded in `docs/OPEN_QUESTIONS.md` rather than
+silently adjusted in the Python port.
+
+## Security note (for M3)
+
+The function parser is a security surface: LLM-supplied strings must never
+reach `eval`/`exec`/`sympify`. The parser is a hand-written tokenizer +
+recursive-descent evaluator over a fixed whitelist of operations
+(`parser.py`). A security review is required before M3 ships any LLM agent.

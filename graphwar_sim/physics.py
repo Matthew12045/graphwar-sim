@@ -24,8 +24,8 @@ axes (Function.java:243-244); we reproduce it exactly rather than "fixing" it.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Callable, List, Sequence, Tuple
 
 from . import config
 from .parser import PolishNotationFunction
@@ -79,8 +79,8 @@ class ShotResult:
     - ``num_steps``: number of integrated points (Function.java:211, 237-297).
     """
 
-    points: List[Tuple[float, float]] = field(default_factory=list)
-    hits: List[Tuple[int, int, int]] = field(default_factory=list)
+    points: list[tuple[float, float]] = field(default_factory=list)
+    hits: list[tuple[int, int, int]] = field(default_factory=list)
     last_x: float = 0.0
     last_y: float = 0.0
     num_steps: int = 0
@@ -185,9 +185,9 @@ def process_function_range(
     ys[0] = values_y
 
     # Hit bookkeeping (Function.java:175-178).
-    players_hit: List[int] = []
-    soldiers_hit: List[int] = []
-    hit_positions: List[int] = []
+    players_hit: list[int] = []
+    soldiers_hit: list[int] = []
+    hit_positions: list[int] = []
 
     def player_already_hit(player: int, soldier: int) -> bool:
         for i in range(len(players_hit)):
@@ -235,11 +235,11 @@ def process_function_range(
                 dist_x = s.x - x
                 dist_y = s.y - y
                 dist_squared = math.pow(dist_x, 2) + math.pow(dist_y, 2)
-                if dist_squared < config.SOLDIER_RADIUS * config.SOLDIER_RADIUS:
-                    if not player_already_hit(s.player_index, s.soldier_index):
-                        players_hit.append(s.player_index)
-                        soldiers_hit.append(s.soldier_index)
-                        hit_positions.append(i)
+                in_radius = dist_squared < config.SOLDIER_RADIUS * config.SOLDIER_RADIUS
+                if in_radius and not player_already_hit(s.player_index, s.soldier_index):
+                    players_hit.append(s.player_index)
+                    soldiers_hit.append(s.soldier_index)
+                    hit_positions.append(i)
 
         # Terrain / NaN termination (Function.java:287-297).
         if obstacle.collide_point(int(x), int(y)):
@@ -256,7 +256,7 @@ def process_function_range(
     last_y = _to_plane_y(ys[num_steps - 1])
 
     # Build the plane-coord trajectory (muzzle through last step).
-    points: List[Tuple[float, float]] = []
+    points: list[tuple[float, float]] = []
     for i in range(num_steps):
         px = _to_plane_x(xs[i])
         py = _to_plane_y(ys[i])
@@ -266,7 +266,7 @@ def process_function_range(
 
     return ShotResult(
         points=points,
-        hits=list(zip(players_hit, soldiers_hit, hit_positions)),
+        hits=list(zip(players_hit, soldiers_hit, hit_positions, strict=True)),
         last_x=last_x,
         last_y=last_y,
         num_steps=num_steps,

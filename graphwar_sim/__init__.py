@@ -14,14 +14,14 @@ Public surface:
 """
 
 from .config import (
-    PLANE_LENGTH,
-    PLANE_HEIGHT,
+    NORMAL_FUNC,
     PLANE_GAME_LENGTH,
+    PLANE_HEIGHT,
+    PLANE_LENGTH,
     SOLDIER_RADIUS,
     STEP_SIZE,
     TEAM1,
     TEAM2,
-    NORMAL_FUNC,
 )
 from .parser import MalformedFunction, PolishNotationFunction
 from .physics import Obstacle, ShotResult, Soldier, process_function_range

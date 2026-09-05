@@ -81,6 +81,7 @@ public class GoldenShot
 			int[] s = soldierSpecs.get(i);
 			players[i] = new Player("p" + i, i, Constants.TEAM1, false, 1, false);
 			players[i].startSoldier(0, s[0], s[1]);
+			players[i].getSoldiers()[0].setAlive(s[2] == 1);
 			if (s[0] == shooter[0] && s[1] == shooter[1])
 			{
 				shooterPlayer = i;

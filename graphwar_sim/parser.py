@@ -2,23 +2,26 @@
 
 This is a clean-room *port*: the algorithm is reproduced from the reference Java
 source (cited per step) but not copied verbatim. It is **not** ``eval``/``exec``/
-``sympify`` — the expression is tokenized, reordered into postfix, and evaluated
-by an explicit stack machine. LLM-supplied strings therefore never reach any
-Python code-evaluation primitive (see the project's security ground rule).
+``sympify`` — the expression is tokenized, reordered, and evaluated by an
+explicit recursive-descent read over the token list. LLM-supplied strings
+therefore never reach any Python code-evaluation primitive (see the project's
+security ground rule).
 
 Reference: ``ref/graphwar/src/Graphwar/PolishNotationFunction.java`` and
 ``FunctionToken.java``.
 
-The emitted form is **Reverse Polish (postfix)**, despite the class name —
-``makeString`` (PolishNotationFunction.java:503-547) re-parenthesizes it as
-``(left op right)``, confirming postfix order.
+The emitted form is **prefix (Polish) notation** — operator first, then its
+operands. ``reorderRec`` (PolishNotationFunction.java:78-149) appends the chosen
+operator *before* recursing into its operand ranges, and ``evaluateRec``
+(PolishNotationFunction.java:968-1127) reads the operator first. (The class name
+"PolishNotation" refers to this prefix order, not Reverse Polish.)
 """
 
 from __future__ import annotations
 
 import math
 import re
-from typing import List, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 from . import config
 
@@ -148,7 +151,7 @@ class _Token:
 
     __slots__ = ("type", "value")
 
-    def __init__(self, type: int, value: Optional[float] = None) -> None:
+    def __init__(self, type: int, value: float | None = None) -> None:
         self.type = type
         self.value = value
 
@@ -175,7 +178,7 @@ def _make_value_token(token: str) -> _Token:
     return _Token(config.VALUE, float(token))
 
 
-def _keyword_token(token: str) -> Optional[_Token]:
+def _keyword_token(token: str) -> _Token | None:
     """Map a non-numeric token to its type, mirroring the Java if/else chain
     (PolishNotationFunction.java:236-311). Returns ``None`` if unrecognized
     (cannot happen for regex-produced tokens)."""
@@ -222,32 +225,31 @@ def _keyword_token(token: str) -> Optional[_Token]:
 
 def _is_implicit(type1: int, type2: int) -> bool:
     """``isImplicit`` (PolishNotationFunction.java:194-207)."""
-    if type1 in (
+    left = type1 in (
         config.VALUE,
         config.VARIABLE1,
         config.VARIABLE2,
         config.VARIABLE3,
         config.RIGHT_BRACKET,
-    ):
-        if type2 in (
-            config.VALUE,
-            config.VARIABLE1,
-            config.VARIABLE2,
-            config.VARIABLE3,
-            config.LEFT_BRACKET,
-        ) or config.get_num_param(type2) == 1:
-            return True
-    return False
+    )
+    right = type2 in (
+        config.VALUE,
+        config.VARIABLE1,
+        config.VARIABLE2,
+        config.VARIABLE3,
+        config.LEFT_BRACKET,
+    ) or config.get_num_param(type2) == 1
+    return left and right
 
 
-def _adjust_implicit_multiplications(tokens: List[_Token]) -> List[_Token]:
+def _adjust_implicit_multiplications(tokens: list[_Token]) -> list[_Token]:
     """``adjustImplicitMultiplications`` (PolishNotationFunction.java:162-192).
 
     Insert a MULTIPLY between adjacent tokens where ``isImplicit`` holds.
     """
     if not tokens:
         return tokens
-    out: List[_Token] = [tokens[0]]
+    out: list[_Token] = [tokens[0]]
     for nxt in tokens[1:]:
         if _is_implicit(out[-1].type, nxt.type):
             out.append(_Token(config.MULTIPLY))
@@ -255,7 +257,7 @@ def _adjust_implicit_multiplications(tokens: List[_Token]) -> List[_Token]:
     return out
 
 
-def _create_regular_notation_tokens(arg_str: str) -> List[_Token]:
+def _create_regular_notation_tokens(arg_str: str) -> list[_Token]:
     """``createRegularNotationTokens`` (PolishNotationFunction.java:209-318)."""
     func_str = arg_str.lower()
     # Every '-' becomes '+-' (unary negation); 'exp' -> 'e^'; ',' -> '.'.
@@ -263,7 +265,7 @@ def _create_regular_notation_tokens(arg_str: str) -> List[_Token]:
     func_str = func_str.replace("exp", "e^")
     func_str = func_str.replace(",", ".")
 
-    normal: List[_Token] = []
+    normal: list[_Token] = []
     for m in _TOKEN_RE.finditer(func_str):
         token = m.group(0)
         if _NUMBER_RE.fullmatch(token):
@@ -283,12 +285,13 @@ def _precedes(t0: int, t1: int) -> bool:
 
 
 def _reorder_rec(
-    polish: List[_Token], tokens: Sequence[_Token], start: int, end: int
+    polish: list[_Token], tokens: Sequence[_Token], start: int, end: int
 ) -> bool:
     """``reorderRec`` (PolishNotationFunction.java:78-149).
 
     Recursively pull out the lowest-nest operator (tie-broken by ``precedes``)
-    and emit it in postfix order. Returns whether any token was emitted.
+    and emit it in prefix order (operator before its operands). Returns whether
+    any token was emitted.
     """
     if start > end or start >= len(tokens):
         return False
@@ -331,9 +334,9 @@ def _reorder_rec(
     return True
 
 
-def _reorder_tokens_to_polish(tokens: Sequence[_Token]) -> List[_Token]:
+def _reorder_tokens_to_polish(tokens: Sequence[_Token]) -> list[_Token]:
     """``reorderTokensToPolishNotation`` (PolishNotationFunction.java:67-76)."""
-    polish: List[_Token] = []
+    polish: list[_Token] = []
     _reorder_rec(polish, tokens, 0, len(tokens) - 1)
     return polish
 
@@ -365,12 +368,13 @@ class PolishNotationFunction:
 
     def __init__(self, func_str: str) -> None:
         normal = _create_regular_notation_tokens(func_str)
-        self._function: List[_Token] = _reorder_tokens_to_polish(normal)
+        self._function: list[_Token] = _reorder_tokens_to_polish(normal)
         if _get_values_needed(self._function) != 0:
             raise MalformedFunction()
 
-    def tokens(self) -> Tuple[Tuple[int, Optional[float]], ...]:
-        """The postfix token list as ``(type, value)`` pairs (for tests/debug)."""
+    def tokens(self) -> tuple[tuple[int, float | None], ...]:
+        """The prefix (Polish) token list as ``(type, value)`` pairs (for
+        tests/debug)."""
         return tuple((t.type, t.value) for t in self._function)
 
     def evaluate(self, var1: float, var2: float = 0.0, var3: float = 0.0) -> float:
