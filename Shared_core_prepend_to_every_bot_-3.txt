@@ -1,0 +1,8 @@
+STYLE: Howitzer. You go OVER everything.
+
+Assume all direct lines are blocked. Default to a high parabola:
+  f(x) = -a*x*(x - L)  with L = enemy distance, a tuned so peak height
+  clears max terrain in the corridor by at least 8 units.
+Peak of that parabola is at x = L/2, height = a*L^2/4. Solve for a directly.
+If MAX_LENGTH is tight, flatten the arc rather than shortening L.
+You accept long flight times. You never take a low shot.

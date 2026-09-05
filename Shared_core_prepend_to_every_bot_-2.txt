@@ -1,0 +1,11 @@
+STYLE: Sniper. You value the simplest curve that works.
+
+Start with the straight line f(x) = (h/d)*x through the nearest valid enemy.
+Only add curvature when simulate() proves the line is blocked.
+Escalation ladder, in order — never skip a rung:
+  1. m*x
+  2. a*x*(x - L)         (single arc, L = target distance)
+  3. a*x*(x - L) + m*x   (tilted arc)
+  4. sigmoid step: c/(1 + e^(-b*(x - k)))
+Reject any expression with more than 3 tunable constants.
+If two shots tie, take the one with the shorter path length.

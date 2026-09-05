@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# The GPL Java reference is a separate, already-cloned git repo.
+# It is cited, never copied into this project (see docs/). Keep it out of VCS.
+/ref/
+
+# Compiled Java output
+*.class
+tools/jar_probe/out/
+
+# OS / editor
+.DS_Store
