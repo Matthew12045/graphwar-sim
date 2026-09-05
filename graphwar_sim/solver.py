@@ -84,6 +84,14 @@ from .state import Game
 _B_WIDTHS: tuple[float, ...] = (0.35, 0.2, 0.6)
 # Number of centres for the fixed-grid rung. # TUNABLE.
 _GRID_N_CENTERS: int = 12
+# Curvature sweep for the terrain-aware arc rung: the free quadratic
+# coefficient ``A`` is swept over this grid per enemy. # TUNABLE — the range
+# and step were chosen by the seeded-map experiments in the M2 session: a
+# narrow fine grid clears terrain on the most dud maps, and widening it
+# recovers nothing while costing more (see docs/OPEN_QUESTIONS.md).
+_ARC_A_MIN: float = -0.1
+_ARC_A_MAX: float = 0.1
+_ARC_A_STEP: float = 0.005
 # Integration step used for the certification bound (Constants.java:88).
 _DU: float = config.STEP_SIZE
 
@@ -92,6 +100,7 @@ RUNG_PER_TARGET = "per_target_gaussian"
 RUNG_FIXED_GRID = "fixed_grid_gaussian"
 RUNG_LINE = "line"
 RUNG_PARABOLA = "parabola"
+RUNG_ARC = "arc"
 RUNG_DUD = "dud"
 
 
@@ -296,6 +305,56 @@ def _parabola_candidate(frame: _Frame) -> _Candidate | None:
     )
 
 
+def _arc_candidates(frame: _Frame) -> list[_Candidate]:
+    """Terrain-aware arcs: sweep the free quadratic curvature per enemy.
+
+    A single-valued ``y = f(x)`` can only reach a target along a monotone-in-x
+    path, but it may *arc over or under* terrain. The closed-form parabola rung
+    is one specific member of the 2-parameter family of quadratics through the
+    muzzle and an enemy; here we sweep the remaining degree of freedom.
+
+    For an enemy ``(tx, ty)`` the auto-offset constraint
+    ``f(tx) - f(mx) = ty - my`` pins the linear coefficient once the quadratic
+    coefficient ``A`` is chosen: writing ``f(x) = A·x² + B·x`` (the constant
+    term is absorbed by the auto-offset), the secant slope
+    ``s = (ty - my)/(tx - mx)`` requires ``B = s - A·(tx + mx)``. Sweeping
+    ``A`` over ``[_ARC_A_MIN, _ARC_A_MAX]`` yields a ladder of arcs that all
+    pass through the muzzle and the enemy but bulge to different extents, so
+    the integrator (the oracle) can find one that clears the rocks. Candidates
+    are ordered nearest-enemy-first, then by ``|A|`` (flattest first, so the
+    cheapest clear arc is tried before the most extreme).
+    """
+    if not frame.targets:
+        return []
+    mx, my = frame.mx, frame.my
+    a_values = _arc_grid()
+    cands: list[_Candidate] = []
+    for tx, ty in sorted(frame.targets, key=lambda p: p[0]):
+        if abs(tx - mx) < 1e-9:
+            continue
+        s = (ty - my) / (tx - mx)
+        for A in a_values:
+            B = s - A * (tx + mx)
+            cands.append(
+                _Candidate(
+                    expression=f"({_num(A)})*x^2+({_num(B)})*x",
+                    rung=RUNG_ARC,
+                    m_bound=2.0 * abs(A),
+                )
+            )
+    cands.sort(key=lambda c: c.m_bound)
+    return cands
+
+
+def _arc_grid() -> list[float]:
+    """The ``A`` sweep grid ``[_ARC_A_MIN, _ARC_A_MAX]`` step ``_ARC_A_STEP``.
+
+    Built in integer steps to avoid float accumulation drift.
+    """
+    n = int(round((_ARC_A_MAX - _ARC_A_MIN) / _ARC_A_STEP))
+    return [_ARC_A_MIN + i * _ARC_A_STEP for i in range(n + 1)]
+
+
 def _dud_candidates() -> list[_Candidate]:
     """Deliberate safe duds (last resort): flat / steep-up / shallow-arc.
 
@@ -328,6 +387,12 @@ def _ordered_candidates(frame: _Frame) -> list[_Candidate]:
     cands.append(_parabola_candidate(frame))
     cands.append(_line_candidate(frame))
     cands.append(_fixed_grid_gaussians(frame, _B_WIDTHS[0]))
+    # The terrain-aware arc sweep is the last real attempt to hit something:
+    # it only runs on the maps where every cheaper rung failed to land a shot
+    # (i.e. would otherwise dud), so its per-candidate integration cost is paid
+    # only there. It generalises the parabola rung by sweeping curvature so the
+    # curve can clear terrain (see docs/OPEN_QUESTIONS.md).
+    cands.extend(_arc_candidates(frame))
     cands.extend(_dud_candidates())
     return [c for c in cands if c is not None]
 

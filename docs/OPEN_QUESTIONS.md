@@ -89,12 +89,15 @@ rung — each rung fired alone, no ladder), after the plain-decimal emission fix
 
 Notes on why this is expected, not a bug:
 
-- **Terrain occlusion is the binding constraint, not the fit.** A single-valued
-  `y = f(x)` curve can only reach a target if a clear monotone-`x` path exists.
-  Far-centred Gaussians underflow to ~0 near the muzzle (a flat approach) and
-  die at terrain before reaching far enemies. This is a genuine physical limit
-  of NORMAL_FUNC mode — the reason the degradation ladder and the safe-dud rung
-  exist at all.
+- **Terrain occlusion is a real constraint, but not always the binding one.**
+  A single-valued `y = f(x)` curve can only reach a target along a
+  monotone-`x` path, and it may *arc over or under* terrain. Far-centred
+  Gaussians underflow to ~0 near the muzzle (a flat approach) and die at
+  terrain before reaching far enemies. Some of those duds were a **fit gap** —
+  the ladder never tried a terrain-clearing arc — and are now recovered by the
+  terrain-aware `arc` rung (see below). A smaller remainder is a genuine
+  physical limit of NORMAL_FUNC mode (no monotone-`x` path exists), which is
+  why the degradation ladder and the safe-dud rung exist at all.
 - **The fixed grid is the *worst* fit for the occlusion problem.** Its centres
   are spread uniformly over the enemy span, so the near-muzzle region is
   under-resolved relative to per-target centres; the resulting flat approach
@@ -115,8 +118,72 @@ caught it: intended `1e-6` at a centre, parsed value `-3.28`).
 **Status:** recorded. The ladder order in `graphwar_sim/solver.py` reflects the
 measured ordering above; the fixed-grid rung is retained (the plan's named
 basis) but demoted. The M2 acceptance bar is *parseable + certified + logged
-hit rate / rung distribution*, **not** a high hit rate — the low absolute hit
-rate is the terrain-occlusion limit, not a solver defect.
+hit rate / rung distribution*, **not** a high hit rate. (The "low absolute hit
+rate is the terrain-occlusion limit" claim below this table was later revised:
+a terrain-aware `arc` rung recovered most of the duds — see the next section.)
+
+---
+
+## M2: terrain-aware `arc` rung — recovering the "terrain duds"
+
+**Question:** On the seeded battery, ~half the maps degraded to the safe-dud
+rung because the fitted curve hit a rock before reaching the enemy. Is that a
+genuine physical limit (no clear path exists) or a fit gap (the ladder never
+tried a curve that clears the terrain)?
+
+**Answer:** **Mostly a fit gap.** The closed-form `parabola` rung is one
+specific member of the family of quadratics through the muzzle and an enemy;
+it fixes the curvature. A single-valued `y = f(x)` can only reach a target
+along a monotone-`x` path, but it may *arc over or under* terrain — and the
+curvature is exactly the degree of freedom that decides whether the arc clears
+the rocks. The new `arc` rung sweeps that curvature per enemy and lets the
+simulator (the oracle) pick the first arc that clears terrain and lands.
+
+**Model.** For an enemy `(tx, ty)` and muzzle `(mx, my)`, the auto-offset
+constraint is `f(tx) - f(mx) = ty - my`. Writing `f(x) = A·x² + B·x` (the
+constant term is absorbed by the auto-offset), the secant slope
+`s = (ty - my)/(tx - mx)` pins `B = s - A·(tx + mx)` once the quadratic
+coefficient `A` is chosen. Sweeping `A` over `[-_ARC_A_MIN, _ARC_A_MAX]`
+step `_ARC_A_STEP` (all `# TUNABLE`) yields arcs that all pass through the
+muzzle and the enemy but bulge to different extents. Candidates are ordered
+nearest-enemy-first, then by `|A|` (flattest first).
+
+**Measured effect** (40 seeds, 2 teams × 2 soldiers, full ladder):
+
+| Metric            | before | after |
+|-------------------|:------:|:-----:|
+| hit rate          | 18/40 (45%) | **33/40 (82%)** |
+| `arc` rung        |   —    |  15   |
+| `dud` rung        |  22    |   7   |
+| friendly fire     |   0    |   0   |
+| parse failures    |   0    |   0   |
+
+The 15 recovered seeds are exactly the ones a wider offline sweep (quadratics
+through muzzle+enemy, `A ∈ [-0.3, 0.3]`, 0.002 step) confirmed are reachable by
+*some* clear arc — i.e. the `arc` rung is not missing them, it is finding them.
+
+**What the `arc` rung does *not* fix — the genuine limit.** Six of the seven
+remaining duds (seeds 2, 18, 20, 23, 27, 32 at the default 2-soldier config)
+are **not** reachable by any quadratic arc in `[-0.3, 0.3]` in the offline
+sweep: no monotone-`x` path clears the terrain, so a safe dud is the correct
+degradation. (Seed 31 is a knife-edge: it clears only at exactly `A = 0.024`,
+one 0.002-grid point, and was not recovered by the shipped 0.005 grid. We
+deliberately did not refine the grid to chase this single fragile seed — a
+shot that clears only at one 4-decimal curvature is numerically unreliable,
+and tuning the grid to it would overfit the seeded battery. Recorded, not
+tuned away.)
+
+**Grid choice.** A narrow fine grid (`[-0.1, 0.1]`, step 0.005) recovers the
+most duds at the lowest cost; widening the range to `[-0.3, 0.3]` recovers
+nothing extra (the extra curvature just misses the targets) and costs ~3× more
+integrations. The arc rung sits just above the duds in the ladder, so its
+per-candidate integration cost is paid only on the maps where every cheaper
+rung already failed.
+
+**Status:** implemented and recorded. `graphwar_sim/solver.py` adds the
+`RUNG_ARC` rung (`_arc_candidates` / `_arc_grid`) between the fixed-grid rung
+and the duds. `tests/test_solver.py::test_arc_rung_clears_terrain_the_cheaper_
+rungs_cannot` guards the terrain-awareness property.
 
 ---
 

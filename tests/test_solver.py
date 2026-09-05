@@ -17,6 +17,7 @@ import pytest
 from graphwar_sim import Game
 from graphwar_sim.parser import PolishNotationFunction
 from graphwar_sim.solver import (
+    RUNG_ARC,
     RUNG_DUD,
     SolverResult,
     _gauss_expression,
@@ -92,6 +93,7 @@ def test_battery_hit_rate_and_rung_distribution_logged() -> None:
         "fixed_grid_gaussian",
         "line",
         "parabola",
+        RUNG_ARC,
         RUNG_DUD,
     }
     rungs = {r.rung for r in results}
@@ -136,6 +138,25 @@ def test_solve_never_crashes_on_hard_maps() -> None:
         assert isinstance(result, SolverResult)
         PolishNotationFunction(result.expression)  # parseable
         assert not result.notes.startswith("FF")  # no friendly fire recorded
+
+
+def test_arc_rung_clears_terrain_the_cheaper_rungs_cannot() -> None:
+    """The terrain-aware arc rung rescues maps the cheaper rungs dud on.
+
+    Because the ladder only reaches the arc rung after every cheaper rung has
+    failed to land a clean shot, a seed that lands on ``arc`` and hits an
+    enemy is, by construction, a map the parabola/line/Gaussian rungs could
+    not clear — i.e. the arc bulged over/under terrain. We assert the rung is
+    non-empty on the seeded battery and that every such seed is a real, clean
+    hit.
+    """
+    results = run_battery(range(1, 41), num_soldiers=4)
+    arc = [r for r in results if r.rung == RUNG_ARC]
+    assert arc, "expected the arc rung to clear terrain on at least one seeded map"
+    for r in arc:
+        assert r.hit_any_enemy, f"seed {r.seed}: arc rung did not hit an enemy"
+        assert not r.hit_teammate, f"seed {r.seed}: arc rung caused friendly fire"
+        assert r.parseable and r.certified
 
 
 def test_dud_rung_hits_nothing() -> None:
