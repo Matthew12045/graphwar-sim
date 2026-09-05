@@ -10,6 +10,7 @@ Public surface:
     - :class:`Soldier`, :class:`Obstacle`, :class:`ShotResult`,
       :func:`process_function_range` (physics)
     - :class:`Game`, :class:`GameState` (state / turn order / win rule)
+    - :func:`solve` / :class:`SolverResult` (deterministic no-LLM solver, M2)
     - :mod:`config` (all constants, each cited to the Java source)
 """
 
@@ -25,6 +26,7 @@ from .config import (
 )
 from .parser import MalformedFunction, PolishNotationFunction
 from .physics import Obstacle, ShotResult, Soldier, process_function_range
+from .solver import SolverResult, solve
 from .state import Game, GameState, Team
 
 __all__ = [
@@ -45,4 +47,6 @@ __all__ = [
     "Game",
     "GameState",
     "Team",
+    "SolverResult",
+    "solve",
 ]
