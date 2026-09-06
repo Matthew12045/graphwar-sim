@@ -1,0 +1,163 @@
+{
+  "root_seed": 1000,
+  "roster": [
+    "solver",
+    "random",
+    "straight"
+  ],
+  "num_matches_per_pair": 5,
+  "num_soldiers": 2,
+  "max_turns": 100,
+  "matches": [
+    {
+      "seed": 1000,
+      "a": "solver",
+      "b": "random"
+    },
+    {
+      "seed": 1001,
+      "a": "random",
+      "b": "solver"
+    },
+    {
+      "seed": 1002,
+      "a": "solver",
+      "b": "random"
+    },
+    {
+      "seed": 1003,
+      "a": "random",
+      "b": "solver"
+    },
+    {
+      "seed": 1004,
+      "a": "solver",
+      "b": "random"
+    },
+    {
+      "seed": 1005,
+      "a": "random",
+      "b": "solver"
+    },
+    {
+      "seed": 1006,
+      "a": "solver",
+      "b": "random"
+    },
+    {
+      "seed": 1007,
+      "a": "random",
+      "b": "solver"
+    },
+    {
+      "seed": 1008,
+      "a": "solver",
+      "b": "random"
+    },
+    {
+      "seed": 1009,
+      "a": "random",
+      "b": "solver"
+    },
+    {
+      "seed": 2000,
+      "a": "solver",
+      "b": "straight"
+    },
+    {
+      "seed": 2001,
+      "a": "straight",
+      "b": "solver"
+    },
+    {
+      "seed": 2002,
+      "a": "solver",
+      "b": "straight"
+    },
+    {
+      "seed": 2003,
+      "a": "straight",
+      "b": "solver"
+    },
+    {
+      "seed": 2004,
+      "a": "solver",
+      "b": "straight"
+    },
+    {
+      "seed": 2005,
+      "a": "straight",
+      "b": "solver"
+    },
+    {
+      "seed": 2006,
+      "a": "solver",
+      "b": "straight"
+    },
+    {
+      "seed": 2007,
+      "a": "straight",
+      "b": "solver"
+    },
+    {
+      "seed": 2008,
+      "a": "solver",
+      "b": "straight"
+    },
+    {
+      "seed": 2009,
+      "a": "straight",
+      "b": "solver"
+    },
+    {
+      "seed": 3000,
+      "a": "random",
+      "b": "straight"
+    },
+    {
+      "seed": 3001,
+      "a": "straight",
+      "b": "random"
+    },
+    {
+      "seed": 3002,
+      "a": "random",
+      "b": "straight"
+    },
+    {
+      "seed": 3003,
+      "a": "straight",
+      "b": "random"
+    },
+    {
+      "seed": 3004,
+      "a": "random",
+      "b": "straight"
+    },
+    {
+      "seed": 3005,
+      "a": "straight",
+      "b": "random"
+    },
+    {
+      "seed": 3006,
+      "a": "random",
+      "b": "straight"
+    },
+    {
+      "seed": 3007,
+      "a": "straight",
+      "b": "random"
+    },
+    {
+      "seed": 3008,
+      "a": "random",
+      "b": "straight"
+    },
+    {
+      "seed": 3009,
+      "a": "straight",
+      "b": "random"
+    }
+  ]
+}

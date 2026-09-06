@@ -109,6 +109,71 @@ def render_state(
     return fig
 
 
+def render_match(
+    game: Game,
+    shots: Sequence[tuple[int, ShotResult]],
+    title: str = "Match",
+) -> object:
+    """Render a full match: final board + every shot's trajectory (M4).
+
+    ``shots`` is the turn-ordered list of ``(team_id, ShotResult)`` the match
+    runner recorded. Each trajectory is drawn in its shooter's team color; hit
+    points are marked with '+'; eliminated soldiers are shown as faint 'x' so
+    the plot tells the match narrative at a glance. The board (alive soldiers)
+    is the state after the last recorded shot.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(7.7, 4.5), dpi=100)
+    image = obstacle_to_image(game.terrain)
+    ax.imshow(
+        image,
+        cmap="gray_r",
+        extent=(0, config.PLANE_LENGTH, config.PLANE_HEIGHT, 0),
+        interpolation="nearest",
+        origin="upper",
+    )
+
+    for team in game.state.teams:
+        color = _team_color(team.team)
+        for s in team.soldiers:
+            if s.alive:
+                ax.plot(
+                    s.x,
+                    s.y,
+                    "o",
+                    color=color,
+                    markersize=config.SOLDIER_RADIUS,
+                    markeredgecolor="black",
+                    markeredgewidth=0.5,
+                )
+            else:
+                ax.plot(s.x, s.y, "x", color="gray", markersize=5)
+
+    for team_id, shot in shots:
+        if not shot.points:
+            continue
+        color = _team_color(team_id)
+        pts = np.asarray(shot.points, dtype=float)
+        ax.plot(pts[:, 0], pts[:, 1], "-", color=color, linewidth=1.0, alpha=0.85)
+        # Hit markers at the struck soldiers (hit positions index into points).
+        for _player, _soldier, pos in shot.hits:
+            if 0 <= pos < len(shot.points):
+                hx, hy = shot.points[pos]
+                ax.plot(hx, hy, "+", color="black", markersize=8)
+
+    ax.set_xlim(0, config.PLANE_LENGTH)
+    ax.set_ylim(config.PLANE_HEIGHT, 0)  # flip so up is up
+    ax.set_aspect("equal")
+    ax.set_title(title)
+    ax.set_xlabel("x (px)")
+    ax.set_ylabel("y (px)")
+    return fig
+
+
 def render_shot(
     terrain: Obstacle,
     shooter: Soldier,

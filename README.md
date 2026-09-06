@@ -15,9 +15,9 @@ checks the Python physics against the compiled Java reference, shot for shot.
 |-----------|-------|--------|
 | M0 | Ground truth from the Java source | ✅ done — see `docs/GROUND_TRUTH.md` |
 | M1 | Headless simulator + golden tests | ✅ done — see below |
-| M2 | Deterministic solver | ⏳ |
-| M3 | LLM agents (security review first) | ⏳ |
-| M4 | Eval harness | ⏳ |
+| M2 | Deterministic solver | ✅ done — degradation ladder, 33/40 hit rate on the seeded battery |
+| M3 | Agents (minimal slice: solver + baselines; LLM agents deferred) | ✅ done — `agents/`, frame round-trip test |
+| M4 | Eval harness (win rate + hit rate only) | ✅ done — `eval/`, see `eval/results/leaderboard.md` |
 
 ## Scope
 
@@ -51,14 +51,42 @@ graphwar_sim/
   physics.py   # process_function_range: the shot integration + hit test
   state.py     # Game / GameState / Team: turn order, win rule, seeded map
   render.py    # headless matplotlib rendering (terrain, soldiers, trajectory)
+agents/
+  base.py          # Agent protocol, Observation (centered world frame), stats
+  observation.py   # observe(game): board -> world-frame obs + ASCII map
+  simulate_tool.py # fire a candidate through the real physics, no kills applied
+  baselines.py     # RandomAgent, StraightShotAgent
+  solver_agent.py  # wraps the deterministic M2 solver
+  emission.py      # format_literal: plain-decimal emission (no exponents)
+eval/
+  runner.py        # seeded round-robin match runner + leaderboard writer
+  metrics.py       # win rate / hit rate roll-up
+  __main__.py      # cli: run a fresh leaderboard or reproduce from seeds.json
+  results/         # committed leaderboard + per-match plots + seeds.json
 tools/
   golden/Graphwar/GoldenShot.java   # in-reference harness that dumps shots as JSON
   jar_probe/                        # one-off terrain probes
 tests/
   golden/    # ≥20 scenarios compared against graphwar.jar output
+  test_agents.py  # M3: frame round-trip, agent contract, full-match no-crash
+  test_eval.py    # M4: determinism, reproducibility from the seed file
 docs/
   GROUND_TRUTH.md   # M0: the behavior spec with file:line citations
   OPEN_QUESTIONS.md # reported divergences & carried-forward assumptions
+```
+
+## Evaluating agents (M4)
+
+Run a fresh leaderboard from a root seed (round-robin across the roster):
+
+```
+python3 -m eval --root 1000 --matches 5 --out eval/results
+```
+
+Reproduce the committed leaderboard **from its seed file alone**:
+
+```
+python3 -m eval --from-seeds eval/results/seeds.json --out eval/results
 ```
 
 ## Install

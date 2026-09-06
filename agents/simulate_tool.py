@@ -45,16 +45,18 @@ def simulate(game: Game, expr: str, obs: Observation | None = None) -> SimResult
         f = PolishNotationFunction(expr)
     except Exception as exc:  # noqa: BLE001 - the reference raises no message
         return SimResult(
-            parseable=False, hit_enemy=False, hit_teammate=False,
-            num_hits=0, num_steps=0, error=f"{type(exc).__name__}",
+            parseable=False,
+            hit_enemy=False,
+            hit_teammate=False,
+            num_hits=0,
+            num_steps=0,
+            error=f"{type(exc).__name__}",
         )
 
     team = game.state.current_team()
     shooter = team.current_soldier()
     inverted = team.team == TEAM2
-    result = process_function_range(
-        f, shooter, game.all_soldiers(), game.terrain, inverted
-    )
+    result = process_function_range(f, shooter, game.all_soldiers(), game.terrain, inverted)
     enemy_hits, teammate_hits = hit_team_counts(game, result)
     return SimResult(
         parseable=True,

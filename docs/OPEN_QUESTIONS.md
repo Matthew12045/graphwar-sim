@@ -187,6 +187,52 @@ rungs_cannot` guards the terrain-awareness property.
 
 ---
 
+## M3 / M4: agents and the evaluation harness — notes (not source questions)
+
+These are design/practice notes from the M3 (agents) and M4 (eval) milestones.
+None of them is a divergence from the reference source; they are recorded so
+a future reviewer does not misread the numbers or the choices.
+
+### Observation frame (M3) — resolved by test, not a question
+
+The agent observation presents the board in the **centered world frame**
+(``x`` in ``[-25, 25]``, ``y`` up) with the TEAM2 mirror applied so the
+shooter always faces right — the same frame the solver's fit works in and the
+physics integrates. This was the plan's highest-risk integration point; it is
+locked by the frame round-trip test (``tests/test_agents.py``), which fires a
+world-frame expression derived from the observation through the real physics
+and asserts the intended geometry is hit (both TEAM1 and TEAM2/mirror cases).
+
+The observation's terrain summary (coarse world-frame blocked cells, step
+15px) and the ASCII board size are ``# TUNABLE`` (not source constants).
+
+### Rung distribution in matches (M4) — a measurement-context difference
+
+``eval/results/leaderboard.md`` reports the solver's per-**shot** rung counts:
+``dud=297`` of 322 shots. This is *not* a regression vs the M2 battery
+(33/40 first-shot hits): most of those duds come from (a) the handful of
+seeded maps where no monotone-x path exists (the genuine occlusion limit, see
+the M2 ``arc`` rung section) and (b) matches that reach the 100-turn cap — on
+an unreachable map the solver duds every turn for the whole match,
+multiplying the dud count linearly while the M2 battery measured exactly one
+solve per seed. A per-*seed* first-shot rung distribution remains the M2
+battery's number.
+
+### Baseline matches mostly draw (M4) — expected
+
+``random`` vs ``straight`` matches end in draws at the turn cap on most maps:
+neither baseline clears terrain (that is precisely what the solver's ``arc``
+rung was built for), so they trade duds until the cap. Win rate between
+baselines is still meaningful on the few maps a straight line happens to
+thread through.
+
+### Plot reproducibility (M4) — data parity, not PNG byte parity
+
+Re-running from the seed file reproduces ``leaderboard.md`` **byte-for-byte**
+(asserted in ``tests/test_eval.py``) and the same per-match plot set. PNG
+*bytes* are not asserted: matplotlib output can vary with library version and
+font cache while carrying identical data.
+
 ## Genuinely open (deferred to later milestones)
 
 - **Token-cost / ablation metrics (M4).** The minimal viable slice skips

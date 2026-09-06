@@ -97,9 +97,7 @@ def _ascii_board(
     terrain_blocks: Sequence[tuple[float, float]],
 ) -> str:
     """Render the world frame as a fixed-width ASCII map (y up, row 0 = top)."""
-    grid: list[list[str]] = [
-        [" "] * _ASCII_COLS for _ in range(_ASCII_ROWS)
-    ]
+    grid: list[list[str]] = [[" "] * _ASCII_COLS for _ in range(_ASCII_ROWS)]
     for wx, wy in terrain_blocks:
         col, row = _cell(wx, wy)
         if col is not None and row is not None:

@@ -109,8 +109,7 @@ def _approx_points(
     if len(got) != len(expected):
         return False
     return all(
-        got_p == pytest.approx(exp_p, abs=tol)
-        for got_p, exp_p in zip(got, expected, strict=True)
+        got_p == pytest.approx(exp_p, abs=tol) for got_p, exp_p in zip(got, expected, strict=True)
     )
 
 
@@ -131,14 +130,12 @@ def test_frame_round_trip_straight_shot_hits_aimed_enemy() -> None:
     result = game.fire(expr)
     # The shot starts at the muzzle (within the soldier radius of the shooter).
     shot_start = result.points[0]
-    assert (shot_start[0] - 100.0) ** 2 + (shot_start[1] - 300.0) ** 2 < (
-        2 * SOLDIER_RADIUS
-    ) ** 2
+    assert (shot_start[0] - 100.0) ** 2 + (shot_start[1] - 300.0) ** 2 < (2 * SOLDIER_RADIUS) ** 2
     # It hits the TEAM2 soldier — the enemy the observation placed at
     # (+18.506, +4.870) and the agent aimed at.
-    assert any(
-        player == 1 for player, _soldier, _pos in result.hits
-    ), f"expected a hit on the TEAM2 enemy, got {result.hits!r}"
+    assert any(player == 1 for player, _soldier, _pos in result.hits), (
+        f"expected a hit on the TEAM2 enemy, got {result.hits!r}"
+    )
     assert all(0 <= _pos < result.num_steps for _p, _s, _pos in result.hits)
 
 
