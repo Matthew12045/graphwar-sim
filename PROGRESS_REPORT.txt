@@ -261,5 +261,38 @@ Three commits, one per slice, subjects prefixed M5.4:
   pytest (--ignore=tests/golden) green. Live gateway probe (tool-use support
   of qwen3.8-27b-fp8 through gateway.9arm.co) was the single open empirical
   risk — see the session's probe outcome before further LLM work.
+
+  LIVE PROBE OUTCOME (same session, 2026-09-06): tool USE works (the schema
+  is honored; concluded rounds emit well-formed simulate calls), but the
+  gateway cannot sustain the agent loop as-is. Findings, all measured:
+    - The gateway forwards NOTHING while qwen thinks: each thinking block
+      arrives EMPTY (content stripped) and buffered, so Cloudflare's ~125s
+      proxy read limit kills any longer generation (524 non-streaming;
+      truncated stream mid-flight; the SDK refuses non-streaming requests
+      whose max_tokens implies >10 min).
+    - qwen thinks to its ENTIRE output budget in ~7/8 rounds — independent
+      of prompt length (a 165-char prompt behaves like the full one), of
+      /no_think, of chat_template_kwargs {"enable_thinking": false} (the
+      block still appears), and of tool_choice "none". ~180-250 tok/s.
+    - Conclusions are stochastic (~1/8 observed at a 16384 budget; the rate
+      degraded to 0/3 late in the session). Every concluded round carried a
+      valid simulate call; a final TEXT commit was never observed.
+    - Therefore the user-locked 128k budget is physically impossible here:
+      16384 is the largest budget whose worst-case burn (~90s) survives the
+      wall; the agent now uses it, with streaming + 2 API retries + the
+      safe-dud fallback so a turn never crashes the match.
+  Code shipped for this: streaming API calls (with a non-streaming fallback
+  for test fakes), _MAX_OUTPUT_TOKENS=16384, per-TURN round cap
+  (burns do not consume attempts), forced text-only commit rounds
+  (tool_choice "none"), disable_thinking auto (extra_body only when a
+  gateway base_url is set), and a CORE divergence fix the probes exposed:
+  physics.py's collidePoint cast now replicates Java's (int) narrowing
+  (JLS 5.1.3 — NaN -> 0, +-Inf saturate; JLS-cited in _java_int_cast) —
+  previously a NaN-y curve raised ValueError out of Game.fire, the UI fire
+  path, and the simulate oracle, where the reference can never raise.
+  OPEN: an LLM-vs-anything match on this gateway remains impractical until
+  the gateway streams thinking deltas or raises its proxy timeout, or a
+  non-thinking model is available. The LLMAgent is fully exercised by fake
+  clients (16 unit tests) and degrades to safe duds, never crashes.
 ==============================================================================
 END OF REPORT

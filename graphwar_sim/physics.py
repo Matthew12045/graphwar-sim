@@ -97,6 +97,21 @@ def _to_plane_y(values_y: float) -> float:
     return -config.PLANE_LENGTH * values_y / config.PLANE_GAME_LENGTH + _HALF_HEIGHT
 
 
+def _java_int_cast(value: float) -> int:
+    """Java ``(int)`` narrowing of a double (JLS 5.1.3): NaN -> 0, +-Inf
+    saturate at Integer.MAX_VALUE / MIN_VALUE. The reference casts the
+    trajectory's plane coords before ``collidePoint`` (Function.java:287);
+    Python's ``int()`` raises on NaN/Inf where the JVM never can, so a
+    NaN-y step (e.g. a curve that evaluates to NaN mid-flight) must take
+    the same path as the ported semantics: in-bounds probe at (0, 0), then
+    the NaN/Inf termination check right after."""
+    if math.isnan(value):
+        return 0
+    if math.isinf(value):
+        return 2147483647 if value > 0 else -2147483648
+    return int(value)
+
+
 def _get_start_angle(f: PolishNotationFunction, x: float, radius: float) -> float:
     """``getStartAngle`` (Function.java:133-160).
 
@@ -241,8 +256,13 @@ def process_function_range(
                     soldiers_hit.append(s.soldier_index)
                     hit_positions.append(i)
 
-        # Terrain / NaN termination (Function.java:287-297).
-        if obstacle.collide_point(int(x), int(y)):
+        # Terrain / NaN termination (Function.java:287-297). The reference
+        # casts the double plane coords with Java's ``(int)`` narrowing
+        # (JLS 5.1.3: NaN -> 0, +-Inf saturate) before collidePoint — it can
+        # never raise; Python's int() does, on a NaN y from f.evaluate. The
+        # cast is replicated so a NaN step takes the same path as the JVM
+        # (collide_point(0, 0), then the NaN check below terminates).
+        if obstacle.collide_point(_java_int_cast(x), _java_int_cast(y)):
             num_steps = i
             break
         if math.isnan(y) or math.isinf(y):

@@ -192,6 +192,60 @@ def test_all_attempts_malformed_returns_safe_dud() -> None:
     assert stats.simulate_calls == 0
 
 
+def test_budget_burn_does_not_consume_an_attempt() -> None:
+    """A max_tokens stop with no text (hidden-thinking burn) is counted like
+    the plan's parse-failure path but the attempt keeps going — the next
+    round can still commit."""
+
+    agent = _agent([_Response("max_tokens", []), _text("0.05*x")])
+    assert agent.act(*_game_and_obs()) == "0.05*x"  # type: ignore[arg-type]
+    stats = agent.stats()
+    assert stats.parse_failures == 1  # the burn, not the commit
+    assert stats.retries == 1
+
+
+def test_last_rounds_force_text_only_commit() -> None:
+    """The last _COMMIT_ROUNDS rounds set tool_choice "none" so a stochastic
+    thinker must emit the bare expression instead of another tool call."""
+    agent = _agent([_Response("max_tokens", [])] * 6 + [_text("0.05*x")])
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "0.05*x"
+    calls = agent._client.messages.calls
+    assert len(calls) == 7
+    assert "tool_choice" not in calls[0]
+    assert calls[6]["tool_choice"] == {"type": "none"}
+    stats = agent.stats()
+    assert stats.parse_failures == 6  # six burns, honest accounting
+
+
+def test_unrecoverable_api_failure_degrades_to_safe_dud() -> None:
+    """After the API retries are exhausted the turn degrades to the safe dud
+    instead of crashing the match (user-locked live-validation decision)."""
+
+    class RemoteProtocolError(Exception):  # duck-typed name the retry set knows
+        pass
+
+    class _DyingMessages:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        def create(self, **kwargs: Any) -> _Response:
+            self.attempts += 1
+            raise RemoteProtocolError("peer closed connection")
+
+    class _DyingClient:
+        def __init__(self) -> None:
+            self.messages = _DyingMessages()
+
+    agent = LLMAgent(model="fake-model", client=_DyingClient())
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == SAFE_DUD
+    stats = agent.stats()
+    assert stats.parse_failures == 1
+    assert stats.retries == 1
+    assert agent._client.messages.attempts == 3  # 1 call + _MAX_API_RETRIES
+
+
 # --- 4. tool-use round routed through BudgetedSimulator -----------------------
 
 
@@ -269,9 +323,42 @@ def test_streaming_client_is_preferred_when_available() -> None:
     assert agent.act(game, obs) == "0.05*x"
     kwargs = agent._client.messages.stream_kwargs
     assert kwargs is not None
-    assert kwargs["max_tokens"] == 128000  # the gateway's thinking budget
+    assert kwargs["max_tokens"] == 16384  # the largest budget under the gateway wall
     assert kwargs["system"] == _SYSTEM_PROMPT
     assert kwargs["tools"][0]["name"] == "simulate"
+
+
+def test_thinking_disabled_auto_with_gateway_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With ANTHROPIC_BASE_URL set (the 9arm gateway case) the qwen
+    thinking-disable kwarg is merged into every call."""
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.9arm.co")
+    agent = _agent([_text("0*x")])
+    game, obs = _game_and_obs()
+    agent.act(game, obs)
+    kwargs = agent._client.messages.calls[0]
+    assert kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_thinking_kept_for_real_anthropic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a gateway base_url (real Anthropic) no extra_body is sent —
+    the real API rejects unknown body fields. An explicit override wins."""
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    agent = _agent([_text("0*x")])
+    game, obs = _game_and_obs()
+    agent.act(game, obs)
+    assert "extra_body" not in agent._client.messages.calls[0]
+
+    forced = LLMAgent(
+        model="fake-model",
+        client=_FakeClient([_text("0*x")]),
+        disable_thinking=True,
+    )
+    forced.act(game, obs)
+    assert "extra_body" in forced._client.messages.calls[0]
 
 
 def test_missing_auth_env_vars_raise_at_construction(

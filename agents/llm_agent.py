@@ -73,17 +73,27 @@ SAFE_DUD: str = "0*x"
 # safe dud. # TUNABLE — not from source.
 _DEFAULT_MAX_ATTEMPTS: int = 4
 
-# API round-trips allowed within ONE attempt before that attempt is treated
-# as failed (a model stuck emitting tool calls would otherwise never stop).
-# Every dispatched round is answered with tool_results, so the conversation
-# stays API-valid across attempts. # TUNABLE — not from source.
+# API round-trips allowed per TURN (the plan caps total round-trips per
+# turn; a budget-burned round costs one but does not end an attempt).
+# # TUNABLE — not from source.
 _MAX_TOOL_ROUNDS_PER_TURN: int = 8
 
-# max_tokens for every API call. The 9arm gateway serves a 128k-context
-# reasoning model (CLAUDE_CODE_MAX_CONTEXT_TOKENS=128000) that visibly
-# thinks for tens of thousands of tokens before acting — give it room to
-# think (user-locked live-validation decision). # TUNABLE — not from source.
-_MAX_OUTPUT_TOKENS: int = 128000
+# The last rounds of a turn force a text-only commit (tool_choice "none") —
+# a stochastic thinker that keeps calling tools otherwise. # TUNABLE —
+# not from source.
+_COMMIT_ROUNDS: int = 2
+
+# max_tokens for every API call. Live gateway measurement (2026-09-06,
+# gateway.9arm.co / qwen3.8-27b-fp8): the model consumes its ENTIRE output
+# budget on hidden thinking (no prompt length changes that — even a 165-char
+# system prompt), at ~182 tok/s, and Cloudflare kills silent generations at
+# ~125s (~23k tokens). 128000 therefore dies EVERY round; 16384 is the
+# largest budget whose worst-case generation (~90s) fits the wall, and a
+# budget-exhausted round degrades to the correction-message path instead of
+# a crash. (User asked for 128k context; the wall makes it physically
+# impossible through this gateway — see PROGRESS_REPORT.txt §9.)
+# # TUNABLE — not from source.
+_MAX_OUTPUT_TOKENS: int = 16384
 
 # Retries for transient gateway deaths on ONE API call (Cloudflare's ~120s
 # proxy read limit truncates long thinking generations: 524 non-streaming,
@@ -115,6 +125,12 @@ def _is_retryable_api_error(exc: Exception) -> bool:
     return type(exc).__name__ in _RETRYABLE_API_ERROR_NAMES
 
 
+# Merged into every API call when thinking is disabled (see LLMAgent):
+# the 9arm gateway forwards these qwen chat-template kwargs to the backend;
+# real Anthropic APIs reject unknown body fields, hence the opt-in.
+_QWEN_NO_THINK_EXTRA_BODY: dict[str, Any] = {"chat_template_kwargs": {"enable_thinking": False}}
+
+
 # Error text for an over-budget simulate call (the loop's cost stop-signal).
 _BUDGET_EXHAUSTED_TEXT = "simulate budget exhausted — commit your best expression now"
 
@@ -138,32 +154,39 @@ _SIMULATE_TOOL: dict[str, Any] = {
 # (the sketch's shooter-relative frame and {outcome, collision_point,
 # nearest_miss_distance} return shape do NOT match the engine — see the
 # module docstring). The SYNTAX section quotes the parser's tokenizer
-# whitelist, not an embellishment of it (docs/GROUND_TRUTH.md §3.2).
+# whitelist, not an embellishment of it (docs/GROUND_TRUTH.md §3.2). The
+# THINK BRIEFLY paragraph targets the measured failure mode: the model
+# happily burns its whole output budget on closed-form ballistic
+# derivations; probing with simulate is both cheaper and the tool's point
+# (see _MAX_OUTPUT_TOKENS for the gateway wall arithmetic).
 _SYSTEM_PROMPT = """\
 You are a Graphwar shot generator. You control one soldier.
 
-FRAME (world coordinates — this is the exact space your expression is \
-evaluated in): x in [-25, 25], y up. Your soldier 'M' sits at (sx, sy), \
-given per turn; the projectile starts there and travels toward increasing \
-x. The game shifts your curve VERTICALLY so it passes through the muzzle: \
-effective curve = f(x) + (sy - f(sx)). Aim by choosing f so the shifted \
-curve passes within hit radius (~0.45 world units) of an enemy's (x, y). \
-Hitting a teammate is a critical failure. Terrain ('#' cells) ends the \
-shot harmlessly. The game nudges the launch point along the curve's own \
-tangent before the offset.
+FRAME: world coordinates — the exact space your expression is evaluated in. \
+x in [-25, 25], y up. Your soldier 'M' sits at (sx, sy), given per turn; \
+the projectile starts there and travels toward increasing x. The game \
+shifts your curve VERTICALLY so it passes through the muzzle: effective \
+curve = f(x) + (sy - f(sx)); it also nudges the launch point along the \
+curve's own tangent first. Aim so the shifted curve passes within hit \
+radius (~0.45 world units) of an enemy's (x, y). Hitting a teammate is a \
+critical failure. Terrain ('#' cells) ends the shot harmlessly.
 
 SYNTAX (the parser's exact tokenizer whitelist — nothing else exists): \
 numbers, ( ) x + - * / ^, functions sqrt log (base 10) ln abs sin sen cos \
 tan tg, constants e pi. Variable x ONLY (no y, no y'). Implicit \
-multiplication works (2x, x(x+1), 2sin(x)). '-' is always unary (a-b is \
-parsed as a+(-b)). Unknown characters are silently DROPPED by the \
-tokenizer. Max 2000 chars; deeper than 64 nested terms is rejected \
-(MalformedFunction → your shot is replaced by a safe dud).
+multiplication works (2x, x(x+1), 2sin(x)). '-' is always unary (a-b parses \
+as a+(-b)). Unknown characters are silently DROPPED. Max 2000 chars; \
+deeper than 64 nested terms is rejected (your shot is replaced by a safe \
+dud).
+
+THINK BRIEFLY. Do NOT derive trajectories analytically — that wastes the \
+turn. Sketch at most a couple of candidate expressions, then probe with \
+simulate and adjust.
 
 TOOL: simulate(expr) fires a candidate through the real physics WITHOUT \
 applying kills. Returns {parseable, hit_enemy, hit_teammate, num_hits, \
 error}. You have a limited per-turn budget of calls (each turn message \
-states the remaining count). Use them. Revise. Then commit.
+states the remaining count). Revise. Then commit.
 
 OUTPUT: after your final simulate call, emit ONLY the bare expression on \
 one line (no "y =", no prose, no code fence).\
@@ -314,10 +337,22 @@ class LLMAgent:
         model: str,
         max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
         client: Any | None = None,
+        disable_thinking: bool | None = None,
     ) -> None:
         self._model = model
         self.name = f"llm:{model}"
         self._max_attempts = max(1, max_attempts)
+        # Live gateway measurement (see _MAX_OUTPUT_TOKENS): the reasoning
+        # model burns its WHOLE output budget on hidden thinking and every
+        # generation dies at the gateway's ~125s wall. Disabling thinking
+        # (qwen chat-template kwarg, forwarded by the 9arm gateway via
+        # extra_body) made rounds conclude in <60s with valid tool calls.
+        # Real Anthropic APIs reject unknown body fields, so the kwarg is
+        # sent only when a gateway base_url is configured (auto) or when
+        # explicitly requested. # TUNABLE — not from source.
+        if disable_thinking is None:
+            disable_thinking = os.environ.get("ANTHROPIC_BASE_URL") is not None
+        self._disable_thinking = disable_thinking
         # Fail at construction on a missing token — never mid-match.
         self._client = client if client is not None else _build_client()
         self._stats = AgentStats()
@@ -339,10 +374,21 @@ class LLMAgent:
             messages: list[dict[str, Any]] = [
                 {"role": "user", "content": _turn_message(obs, sim.remaining)}
             ]
+            rounds_left = _MAX_TOOL_ROUNDS_PER_TURN
             for _attempt in range(self._max_attempts):
-                candidate = self._run_attempt(messages, sim)
+                candidate, rounds_used = self._run_attempt(messages, sim, rounds_left)
+                rounds_left -= rounds_used
                 if candidate is not None:
                     return candidate
+                if rounds_left <= 0:
+                    break
+            return SAFE_DUD
+        except Exception:  # noqa: BLE001 - the match must never crash on one turn
+            # Unrecoverable after the API retries (e.g. the gateway killed
+            # every regeneration): degrade this turn to the safe dud,
+            # accounted like the runner's defensive malformed-emission branch.
+            self._stats.parse_failures += 1
+            self._stats.retries += 1
             return SAFE_DUD
         finally:
             self._stats.simulate_calls += sim.calls_used
@@ -353,7 +399,7 @@ class LLMAgent:
 
     # -- internals ------------------------------------------------------------
 
-    def _create(self, messages: list[dict[str, Any]]) -> Any:
+    def _create(self, messages: list[dict[str, Any]], force_commit: bool = False) -> Any:
         """One API round-trip: streaming when the client supports it.
 
         The 9arm gateway serves a reasoning model that thinks for MINUTES
@@ -361,10 +407,13 @@ class LLMAgent:
         Cloudflare's ~120s proxy read limit kills long generations mid-call
         (524 non-streaming, truncated stream mid-flight). Each retry
         regenerates from scratch — a fresh generation may land under the
-        limit. Clients that expose ``messages.stream`` get the streaming
-        path; test fakes expose only ``messages.create`` and take the
-        non-streaming fallback — the response surface is identical
-        (``.stop_reason`` + ``.content`` blocks).
+        limit. ``force_commit`` sets ``tool_choice: "none"`` so the model
+        MUST answer in text (the last rounds of a turn; a stochastic thinker
+        that never commits otherwise). Clients that expose
+        ``messages.stream`` get the streaming path; test fakes expose only
+        ``messages.create`` and take the non-streaming fallback — the
+        response surface is identical (``.stop_reason`` + ``.content``
+        blocks).
         """
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -373,6 +422,10 @@ class LLMAgent:
             "tools": [_SIMULATE_TOOL],
             "messages": messages,
         }
+        if force_commit:
+            kwargs["tool_choice"] = {"type": "none"}
+        if self._disable_thinking:
+            kwargs["extra_body"] = dict(_QWEN_NO_THINK_EXTRA_BODY)
         stream_factory = getattr(self._client.messages, "stream", None)
         for retry in range(_MAX_API_RETRIES + 1):
             try:
@@ -386,44 +439,46 @@ class LLMAgent:
                 continue
         raise AssertionError("unreachable")  # for the type checker
 
-    def _run_attempt(self, messages: list[dict[str, Any]], sim: BudgetedSimulator) -> str | None:
-        """One attempt: API round-trips until a final (non-tool_use) response.
+    def _run_attempt(
+        self,
+        messages: list[dict[str, Any]],
+        sim: BudgetedSimulator,
+        rounds_left: int,
+    ) -> tuple[str | None, int]:
+        """One attempt within the turn's TOTAL round budget (the plan caps
+        API round-trips per TURN, not per attempt — a stochastic thinker
+        needs every round it can get; a budget-burned round with no usable
+        text is counted and corrected but does NOT consume an attempt).
 
-        Returns the validated expression, or ``None`` when the attempt
-        failed (malformed emission, no usable text, or the tool-round cap) —
-        the caller moves on to the next attempt. Every failed emission
+        Returns ``(candidate | None, rounds_consumed)``. ``None`` moves the
+        caller to the next attempt: a malformed candidate, or the turn
+        round-cap breach. The last ``_COMMIT_ROUNDS`` rounds force a
+        text-only commit (``tool_choice: "none"``). Every failed emission
         increments the parse-failure/retry counters and queues a correction
         message for the re-call.
         """
-        for _round in range(_MAX_TOOL_ROUNDS_PER_TURN):
-            response = self._create(messages)
+        used = 0
+        while used < rounds_left:
+            force_commit = rounds_left - used <= _COMMIT_ROUNDS
+            response = self._create(messages, force_commit=force_commit)
+            used += 1
             if response.stop_reason == "tool_use":
                 self._dispatch_tool_round(response, sim, messages)
                 continue
             expr = _extract_candidate(_response_text(response))
             messages.append({"role": "assistant", "content": response.content})
             if expr is None:
+                # Budget burned on hidden thinking (no text at all): counted
+                # like the plan's parse-failure path, but the attempt keeps
+                # going — a fresh conclusion round may still land.
                 self._fail_attempt(messages, "no expression found in the response")
-                return None
+                continue
             reason = _validate(expr)
             if reason is None:
-                return expr
+                return expr, used
             self._fail_attempt(messages, f"{reason} (the reference parser reports no diagnostics)")
-            return None
-        # Tool-round cap breached mid-attempt: every tool_use was already
-        # answered inside the loop, so the conversation is API-valid; nudge
-        # for a final answer and fail the attempt.
-        nudge = {
-            "type": "text",
-            "text": "Too many tool rounds — emit ONLY the bare expression on "
-            "one line, no more tool calls.",
-        }
-        last = messages[-1]
-        if last["role"] == "user" and isinstance(last["content"], list):
-            last["content"].append(nudge)
-        else:
-            messages.append({"role": "user", "content": [nudge]})
-        return None
+            return None, used
+        return None, used
 
     def _dispatch_tool_round(
         self,
