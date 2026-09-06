@@ -57,6 +57,7 @@ assertion.
 from __future__ import annotations
 
 import collections
+import multiprocessing
 
 from graphwar_sim import ccf, config
 from graphwar_sim.corridor import WORLD_RADIUS, shooter_frame
@@ -85,9 +86,7 @@ def _reached_u(result, inverted, mx):
     px = result.points[-1][0]
     if inverted:
         px = config.PLANE_LENGTH - px
-    world_x = (
-        config.PLANE_GAME_LENGTH * (px - config.PLANE_LENGTH / 2.0) / config.PLANE_LENGTH
-    )
+    world_x = config.PLANE_GAME_LENGTH * (px - config.PLANE_LENGTH / 2.0) / config.PLANE_LENGTH
     return world_x - mx
 
 
@@ -95,9 +94,7 @@ def _plane_of(wx, wy, inverted):
     """World ``(wx, wy)`` -> plane px, exactly as physics.py:222-226 (incl. the
     TEAM2 mirror at 225-226)."""
     px = config.PLANE_LENGTH * wx / config.PLANE_GAME_LENGTH + config.PLANE_LENGTH / 2.0
-    py = (
-        -config.PLANE_LENGTH * wy / config.PLANE_GAME_LENGTH + config.PLANE_HEIGHT / 2.0
-    )
+    py = -config.PLANE_LENGTH * wy / config.PLANE_GAME_LENGTH + config.PLANE_HEIGHT / 2.0
     if inverted:
         px = config.PLANE_LENGTH - px
     return px, py
@@ -144,7 +141,6 @@ def _check_certified_candidate(seed, cand, game):
     mate_hits = [h for h in result.hits if (h[0], h[1]) in mate_ids]
     assert not mate_hits, f"seed={seed} CERTIFIED candidate: friendly fire {mate_hits}"
 
-
     # --- (b) 10x-dense fired-curve sampling on the real geometry ------------
     curve = ccf._fired_curve(cand.expression, fr.mx, fr.my)
     assert curve is not None, f"seed={seed} CERTIFIED candidate did not parse"
@@ -152,23 +148,26 @@ def _check_certified_candidate(seed, cand, game):
     # Map the intended target to its plane soldier (enemy teams, alive).
     shooter_id = (shooter.player_index, shooter.soldier_index)
     target_soldier = None
-    for j, team in enumerate(fresh.state.teams):
+    for _j, team in enumerate(fresh.state.teams):
         if team.team == team_id:
             continue
-        for k, s in enumerate(team.soldiers):
+        for _k, s in enumerate(team.soldiers):
             if not s.alive:
                 continue
             if fresh_fr.inverted:
-                swx = config.PLANE_GAME_LENGTH * (
-                    (config.PLANE_LENGTH - s.x) - config.PLANE_LENGTH / 2.0
-                ) / config.PLANE_LENGTH
+                swx = (
+                    config.PLANE_GAME_LENGTH
+                    * ((config.PLANE_LENGTH - s.x) - config.PLANE_LENGTH / 2.0)
+                    / config.PLANE_LENGTH
+                )
             else:
-                swx = config.PLANE_GAME_LENGTH * (
-                    s.x - config.PLANE_LENGTH / 2.0
-                ) / config.PLANE_LENGTH
+                swx = (
+                    config.PLANE_GAME_LENGTH
+                    * (s.x - config.PLANE_LENGTH / 2.0)
+                    / config.PLANE_LENGTH
+                )
             swy = (
-                config.PLANE_GAME_LENGTH * (-s.y + config.PLANE_HEIGHT / 2.0)
-                / config.PLANE_LENGTH
+                config.PLANE_GAME_LENGTH * (-s.y + config.PLANE_HEIGHT / 2.0) / config.PLANE_LENGTH
             )
             if abs(swx - tx) < 1e-6 and abs(swy - ty) < 1e-6:
                 target_soldier = s
@@ -209,38 +208,58 @@ def _check_certified_candidate(seed, cand, game):
     return "ok", n_samples
 
 
-def test_certified_no_collisions_over_200_maps():
-    """Fire every CERTIFIED candidate on seeds 1..200 and assert zero collisions
-    (terrain at 10x density + soldier disks), no friendly fire, and that each
-    trajectory reaches its goal column."""
+def _check_seed(seed):
+    """Worker for one map: solve + every verification of §11, unchanged.
+
+    Runs in a child process (seeds are fully independent; nothing here mutates
+    module state), returning ``(summary_delta, failures, total_dense)`` so the
+    parent aggregates exactly the counters the sequential version printed.
+    """
     summary = collections.Counter()
     failures = []
     total_dense = 0
 
-    for seed in range(1, _NUM_MAPS + 1):
-        game = Game.create(seed, num_soldiers=_NUM_SOLDIERS)
-        res = ccf.solve_for_game(game)
-        summary[f"outcome:{res.outcome.value}"] += 1
+    game = Game.create(seed, num_soldiers=_NUM_SOLDIERS)
+    res = ccf.solve_for_game(game)
+    summary[f"outcome:{res.outcome.value}"] += 1
 
-        certified = [c for c in res.candidates if c.certified]
-        summary["certified_candidates"] += len(certified)
+    certified = [c for c in res.candidates if c.certified]
+    summary["certified_candidates"] += len(certified)
+    if res.outcome == "CERTIFIED":
+        assert certified, f"seed={seed}: OUTCOME=CERTIFIED but no certified candidate returned"
+    if not certified:
+        return summary, failures, total_dense
 
-        if res.outcome == "CERTIFIED":
-            assert certified, (
-                f"seed={seed}: OUTCOME=CERTIFIED but no certified candidate returned"
-            )
-        if not certified:
-            continue
+    for cand in certified:
+        try:
+            _tag, n = _check_certified_candidate(seed, cand, game)
+            total_dense += n
+            summary["candidates_checked"] += 1
+        except AssertionError as exc:  # a genuine CERTIFIED-but-collided case
+            failures.append(str(exc))
+    return summary, failures, total_dense
 
-        n_checked = 0
-        for cand in certified:
-            try:
-                _tag, n = _check_certified_candidate(seed, cand, game)
-                total_dense += n
-                n_checked += 1
-            except AssertionError as exc:  # a genuine CERTIFIED-but-collided case
-                failures.append(str(exc))
-        summary["candidates_checked"] += n_checked
+
+def test_certified_no_collisions_over_200_maps():
+    """Fire every CERTIFIED candidate on seeds 1..200 and assert zero collisions
+    (terrain at 10x density + soldier disks), no friendly fire, and that each
+    trajectory reaches its goal column.
+
+    Maps are verified in parallel across CPU cores -- per-map work, seeds and
+    assertions are identical to the sequential version; only wall time drops.
+    """
+    summary = collections.Counter()
+    failures = []
+    total_dense = 0
+
+    ctx = multiprocessing.get_context("spawn")
+    with ctx.Pool(min(multiprocessing.cpu_count(), _NUM_MAPS)) as pool:
+        for seed_summary, seed_failures, seed_dense in pool.imap_unordered(
+            _check_seed, range(1, _NUM_MAPS + 1), chunksize=2
+        ):
+            summary.update(seed_summary)
+            failures.extend(seed_failures)
+            total_dense += seed_dense
 
     # Always print the distribution (for the battery REPORT); do NOT assert it.
     print(f"\n[ccf property]  {dict(summary)}")
