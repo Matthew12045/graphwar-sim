@@ -5,9 +5,10 @@ What this file pins (each assertion cites the spec line in its comments):
 - §4 curvature bound: the emitted Gaussian sum's ``max|f''|`` is bounded by
   ``sigma^-2 * ||w||_1`` (the analytic bound of the module is validated
   numerically through the REAL parser and formatter).
-- §2 emission budget: ``J_max`` is derived from ``config.MAX_EXPR_CHARS``
-  through the REAL formatter, and an actual ``ccf._emit`` with ``J_max``
-  Gaussian weights + nonzero affine fits under the cap.
+- §2 emission budget: ``J_max`` is derived from ``config.MAX_EXPR_CHARS`` and
+  ``config.MAX_AST_DEPTH`` (M5.3) through the REAL formatter, and an actual
+  ``ccf._emit`` with ``J_max`` Gaussian weights + nonzero affine fits under
+  the caps.
 - §11 degenerate inputs: muzzle-at-or-behind target, single-sample span,
   corridor empty at k=0, target inside terrain, sigma ladder exhausted
   (BASIS_INFEASIBLE), and the MILP timeout path (no crash + the ``timeout``
@@ -38,6 +39,7 @@ import numpy as np
 
 from graphwar_sim import ccf, config, emission
 from graphwar_sim.parser import PolishNotationFunction
+from graphwar_sim.solver import RUNG_CCF, solve
 from graphwar_sim.state import Game
 
 
@@ -111,14 +113,18 @@ def test_curvature_bound_numeric_matches_analytic() -> None:
 
 
 def test_emission_budget_reproduced() -> None:
-    """J_max is derived from config.MAX_EXPR_CHARS through the REAL formatter.
+    """J_max is derived from config.MAX_EXPR_CHARS and config.MAX_AST_DEPTH
+    through the REAL formatter.
 
-    (a) reproduce the arithmetic; (b) sanity floor; (c) an actual ccf._emit
-    with J_max nonzero Gaussian weights + nonzero affine fits under the cap
-    (breaks if the limit or formatter changes).
+    (a) reproduce the arithmetic on BOTH dimensions (5.2.md §2 step 2: the
+    test reads the limits from config so it breaks if either changes);
+    (b) sanity floor; (c) an actual ccf._emit with J_max nonzero Gaussian
+    weights + nonzero affine fits under the char cap AND parses under the
+    depth cap (breaks if either limit or the formatter changes).
     """
     budget = ccf.emission_budget()
     char_limit = config.MAX_EXPR_CHARS
+    depth_limit = config.MAX_AST_DEPTH
     sigma_rep = ccf._SIGMA_LADDER[0]
     per = len(emission.gauss_term(-1.0, -12.3456, ccf._sigma_b(sigma_rep))) + 3
     affine = (
@@ -128,10 +134,18 @@ def test_emission_budget_reproduced() -> None:
     )
     # (a) the derived quantities equal the arithmetic the module performs.
     assert budget.char_limit == char_limit
+    assert budget.depth_limit == depth_limit
     assert budget.per_term_cost == per
     assert budget.affine_cost == affine
     assert budget.safety == ccf._EXPR_CHARS_SAFETY
-    assert budget.j_max == max(0, (char_limit - affine - ccf._EXPR_CHARS_SAFETY) // per)
+    j_chars = max(0, (char_limit - affine - ccf._EXPR_CHARS_SAFETY) // per)
+    j_depth = 1 << max(0, depth_limit - 3) if depth_limit >= 3 else 0
+    assert budget.j_max_chars == j_chars
+    assert budget.j_max_depth == j_depth
+    assert budget.j_max == min(j_chars, j_depth)
+    # At the shipped values the char limit binds (the depth dimension is
+    # astronomically looser); the consumers below rely on the binding min.
+    assert j_depth >= j_chars
     # (b) sanity floor on how many Gaussian terms the budget admits.
     assert budget.j_max >= 8, f"J_max={budget.j_max} implausibly small"  # TUNABLE sanity
 
@@ -139,7 +153,8 @@ def test_emission_budget_reproduced() -> None:
     # Magnitudes mirror the budget's representative term (negative weight,
     # negative centre, coarsest-ladder sigma) so the per-term cost equals the
     # measured one; balanced-tree/affine wrappers are covered by the +3/+6
-    # accounts. This breaks if MAX_EXPR_CHARS or the formatter changes.
+    # accounts. This breaks if MAX_EXPR_CHARS, MAX_AST_DEPTH, or the formatter
+    # changes.
     centers = np.asarray([-12.3456 + 0.01 * i for i in range(budget.j_max)], dtype=float)
     w = np.full(budget.j_max, -1.0)
     expr = ccf._emit(w, centers, sigma_rep, -1.234567890123, -12.345678901234, mx=0.0)
@@ -147,7 +162,36 @@ def test_emission_budget_reproduced() -> None:
         f"J_max={budget.j_max} emission length {len(expr)} exceeds "
         f"MAX_EXPR_CHARS={char_limit}"
     )
-    _ppn(expr)  # the emitted expression must parse
+    _ppn(expr)  # the emitted expression must parse (incl. the depth cap)
+
+
+# --- M5.3: solver/CCF emissions sit inside the AST depth cap with margin ------
+
+
+def test_solver_emissions_within_ast_depth_cap() -> None:
+    """Every expression the ladder emits parses AND evaluates at a tree depth
+    well under ``config.MAX_AST_DEPTH``; CCF output specifically stays <= 16
+    (real emissions peak at depth ~9 = ceil(log2 J_max) + 3, so 16 leaves
+    ~7x headroom under the 64 cap). One seed per final rung of the M5.2
+    per-seed battery (REPORT.md): 1 ccf, 2 SOLVER_FAILED, 3 fixed_grid,
+    4 arc, 5 parabola, 9 per_target_gaussian, 38 line.
+    """
+    for seed in (1, 2, 3, 4, 5, 9, 38):  # TUNABLE battery: one seed per rung
+        res = solve(Game.create(seed, num_soldiers=2))
+        f = _ppn(res.expression)  # the parser's own guard accepts it
+        assert f.depth() <= config.MAX_AST_DEPTH, f"seed={seed}: depth {f.depth()}"
+        if res.rung == RUNG_CCF:
+            assert f.depth() <= 16, f"seed={seed}: CCF emission at depth {f.depth()}"
+
+
+def test_ccf_candidates_within_depth_margin() -> None:
+    """Every candidate CCF produces (not only the certified one) parses and
+    stays <= 16 deep — the whole candidate list is surfaced to the oracle."""
+    for seed in (1, 10):
+        res = ccf.solve_for_game(Game.create(seed, num_soldiers=2))
+        assert res.candidates, f"seed={seed}: no candidates to check"
+        for cand in res.candidates:
+            assert _ppn(cand.expression).depth() <= 16, f"seed={seed}"
 
 
 # --- §11 degenerate inputs ---------------------------------------------------

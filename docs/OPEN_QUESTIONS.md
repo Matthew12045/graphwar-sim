@@ -364,6 +364,48 @@ exact (layered DAG; the column sweep is equivalent to Dijkstra). The choice and
 its rationale live in the `_branch_paths` docstring; this entry records the
 deviation from literal K-best.
 
+### (k) Expression depth limit — RESOLVED: the reference has none; harness cap `MAX_AST_DEPTH = 64`
+
+**Question (M5.3):** `1+1+1+…` nests one `+` per term. Does anything bound the
+parse/evaluation depth?
+
+**Answer: the reference has no depth limit either.** Its `evaluateRec`
+(PolishNotationFunction.java:968-1127) recurses once per operator and
+`reorderRec` (78-149) once per pulled operator, unbounded — a deep-enough
+input dies with `StackOverflowError` in the JVM. Same family as the missing
+character limit, entry (e) above.
+
+**The collision is real in this port, and measured.** A 1000-term chain
+`1+1+…+1` is 1999 characters — INSIDE `MAX_EXPR_CHARS = 2000` — and raises
+`RecursionError` in `_reorder_rec` during parse (Python's 1000-frame stack;
+probe: 990 terms parse and evaluate fine, 1000 die). Every consumer that
+catches only `MalformedFunction` — `Game.fire` (state.py:242, unguarded
+constructor), the match runner's defensive block (eval/runner.py), the UI
+server's 400 path (`ui/server.py`) — would be bypassed and the match/page
+crashes. `agents.simulate_tool.simulate` happened to catch bare `Exception`,
+so the oracle reported `parseable=False, error="RecursionError"` instead.
+
+**Harness cap:** `config.MAX_AST_DEPTH = 64` (`# TUNABLE — not from source`),
+enforced at parse time in `parser.py`: `_reorder_rec` raises
+`MalformedFunction` past the recursion cap, and
+`PolishNotationFunction.__init__` computes the prefix token list's
+evaluation-tree depth **iteratively** (explicit stack; leaves depth 1;
+unary = top+1; binary = max(top2)+1 via `config.get_num_param`) and raises
+`MalformedFunction` past 64. Behavior at depth ≤ 64 is byte-identical to the
+unguarded port. 64 is justified against reality: real CCF emissions peak at
+depth ~9 (`ceil(log2 J) + 3` with J_max ≈ 55 under the char limit — the
+balanced tree of `emission.balanced_sum`), so the cap leaves ~7× solver
+headroom while rejecting hostile chains ~15× before Python's recursion limit.
+
+**Consequence for LLM/hostile input (the M5.4 concern):** deep input parses as
+`MalformedFunction` → the runner classifies the turn `PARSE_ERROR` and fires
+the safe dud `0*x`; the UI returns its 400 shape; the simulate oracle reports
+`parseable=False, error="MalformedFunction"`. Deep input can never crash a
+match again. (Behavior change from M5.2, intended and documented: the
+`error="RecursionError"` oracle string no longer occurs for depth; it cannot
+occur for any input, since the cap rejects depth before the recursion can
+blow.)
+
 ## Genuinely open (deferred to later milestones)
 
 - **Token-cost / ablation metrics (M4).** The minimal viable slice skips

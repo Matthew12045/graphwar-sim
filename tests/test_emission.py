@@ -13,6 +13,7 @@ import math
 
 import pytest
 
+from graphwar_sim import config
 from graphwar_sim.emission import balanced_sum, format_literal, gauss_term
 from graphwar_sim.parser import MalformedFunction, PolishNotationFunction
 
@@ -84,6 +85,33 @@ def test_balanced_sum_bracket_depth_is_log2() -> None:
         # ceil(log2(J)) tree levels + 3 for the Gaussian term's own parens
         # (weight, e^(...), centre).
         assert max_depth(expr) <= math.ceil(math.log2(j)) + 3, f"J={j}"
+
+
+def test_balanced_depth_fits_the_m53_ast_cap() -> None:
+    """The two depth accounts compose: the balanced tree's ``ceil(log2 J) + 3``
+    bracket depth stays under ``config.MAX_AST_DEPTH`` for every J the CCF
+    emission budget could ever ask for (J <= j_max ≈ 55 ⇒ depth <= 9), with
+    wide margin. Breaks if either the formatter's nesting or the cap changes.
+    """
+
+    def max_depth(expr: str) -> int:
+        depth = 0
+        best = 0
+        for ch in expr:
+            if ch == "(":
+                depth += 1
+                best = max(best, depth)
+            elif ch == ")":
+                depth -= 1
+        return best
+
+    for j in (2, 4, 8, 16, 32, 64, 128):
+        terms = [gauss_term(1.0, float(i), 0.5) for i in range(j)]
+        expr = balanced_sum(terms)
+        bound = math.ceil(math.log2(j)) + 3
+        assert bound <= config.MAX_AST_DEPTH, f"J={j}: bound {bound} exceeds the cap"
+        PolishNotationFunction(expr)  # the parser's own guard accepts it
+        assert max_depth(expr) <= bound, f"J={j}"
 
 
 def test_balanced_sum_single_term() -> None:

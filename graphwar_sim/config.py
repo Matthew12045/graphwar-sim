@@ -91,6 +91,23 @@ TURN_TIME: int = 60000
 # it breaks if the cap changes. # TUNABLE — not from source.
 MAX_EXPR_CHARS: int = 2000
 
+# --- AST depth cap (M5.3) ----------------------------------------------------
+# The reference imposes NO expression-depth limit either: ``evaluateRec``
+# (PolishNotationFunction.java:968-1127) recurses once per operator and
+# ``reorderRec`` (78-149) once per pulled operator, so a left-linear chain
+# ("1+1+1+…") dies with StackOverflowError in the JVM — the same family as the
+# missing char limit (docs/OPEN_QUESTIONS.md (e), (k)). In this port the
+# collision is real and measured: a 1000-term chain (1999 chars, INSIDE
+# MAX_EXPR_CHARS) hits Python's 1000-frame recursion limit and raises
+# RecursionError in ``_reorder_rec`` during parse, which propagates out of
+# every unguarded consumer (``Game.fire``, the match runner, the UI server).
+# This harness cap bounds the evaluation-tree depth at parse time (raising
+# MalformedFunction, never crashing): real CCF emissions peak at depth ~9
+# (ceil(log2 J) + 3, J_max ≈ 50 under the char limit), so 64 leaves ~7×
+# solver headroom while rejecting hostile chains ~15× before Python's
+# recursion limit. # TUNABLE — not from source.
+MAX_AST_DEPTH: int = 64
+
 # --- Token type codes (drive operator precedence) ---------------------------
 # FunctionToken.java:22-39. The integer *value* is the precedence key: a lower
 # number is pulled out of a nest level first (see parser.reorder_rec).

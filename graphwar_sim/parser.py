@@ -288,13 +288,25 @@ def _precedes(t0: int, t1: int) -> bool:
     return t0 < t1
 
 
-def _reorder_rec(polish: list[_Token], tokens: Sequence[_Token], start: int, end: int) -> bool:
+def _reorder_rec(
+    polish: list[_Token], tokens: Sequence[_Token], start: int, end: int, depth: int = 0
+) -> bool:
     """``reorderRec`` (PolishNotationFunction.java:78-149).
 
     Recursively pull out the lowest-nest operator (tie-broken by ``precedes``)
     and emit it in prefix order (operator before its operands). Returns whether
     any token was emitted.
+
+    Harness guard (M5.3): the recursion itself is depth-bounded by
+    ``config.MAX_AST_DEPTH`` and raises :class:`MalformedFunction` past it —
+    the reference's ``reorderRec`` recurses unbounded and dies with
+    StackOverflowError on a hostile left-linear chain that fits inside
+    ``MAX_EXPR_CHARS`` (docs/OPEN_QUESTIONS.md (k)). Without this guard a
+    1000-term chain RecursionErrors here before any later check can run.
+    Behavior for depth ≤ cap is identical to the unguarded port.
     """
+    if depth > config.MAX_AST_DEPTH:
+        raise MalformedFunction()
     if start > end or start >= len(tokens):
         return False
 
@@ -323,15 +335,15 @@ def _reorder_rec(polish: list[_Token], tokens: Sequence[_Token], start: int, end
         polish.append(tokens[next_idx])
     elif nparam == 1:
         polish.append(tokens[next_idx])
-        _reorder_rec(polish, tokens, next_idx + 1, end)
+        _reorder_rec(polish, tokens, next_idx + 1, end, depth + 1)
     else:  # nparam == 2
         polish.append(tokens[next_idx])
-        left_exists = _reorder_rec(polish, tokens, start, next_idx - 1)
+        left_exists = _reorder_rec(polish, tokens, start, next_idx - 1, depth + 1)
         # ADD may have a single operand: insert a 0 if the left side is empty
         # (PolishNotationFunction.java:131-138).
         if tokens[next_idx].type == config.ADD and not left_exists:
             polish.append(_Token(config.VALUE, 0.0))
-        _reorder_rec(polish, tokens, next_idx + 1, end)
+        _reorder_rec(polish, tokens, next_idx + 1, end, depth + 1)
 
     return True
 
@@ -357,6 +369,58 @@ def _get_values_needed(function: Sequence[_Token]) -> int:
     return values_needed
 
 
+def _prefix_depth(function: Sequence[_Token]) -> int | None:
+    """The evaluation-tree depth of a prefix (Polish) token list, iteratively.
+
+    Leaves (``config.get_num_param == 0``) are depth 1; a unary operator sits
+    one level above its operand; a binary operator one level above the deeper
+    of its two operands. Operands of a prefix operator come AFTER it, so the
+    walk keeps an explicit stack of open operators
+    ``(operands_still_needed, deepest_child_so_far)`` and cascades completion
+    — when an operator's last operand arrives, its own depth becomes
+    ``max(child depths) + 1`` and it attaches to ITS parent the same way.
+    The ADD zero-fill token and unary SUBTRACT are handled for free because
+    operand counts come from ``config.get_num_param``.
+
+    Returns the root depth, or ``None`` if the list is not a single complete
+    expression (defensive: ``_get_values_needed`` already rejects those).
+
+    Harness guard (M5.3): the reference's ``evaluateRec`` recurses once per
+    operator with no depth limit (StackOverflowError family, like the missing
+    char limit — docs/OPEN_QUESTIONS.md (k)). The port's ``evaluate`` mirrors
+    that recursion, so the depth must be bounded AT PARSE TIME, computed
+    iteratively (this function) rather than during evaluation.
+    """
+    # Stack frames: [operands still needed, deepest completed child so far].
+    stack: list[list[int]] = []
+    root_depth: int | None = None
+
+    def _attach(child_depth: int) -> None:
+        """Attach a completed subtree of depth ``child_depth`` to the innermost
+        open operator, cascading completion up the stack."""
+        nonlocal root_depth
+        while stack:
+            frame = stack[-1]
+            frame[1] = max(frame[1], child_depth)
+            frame[0] -= 1
+            if frame[0] == 0:
+                stack.pop()
+                child_depth = frame[1] + 1
+            else:
+                return
+        root_depth = child_depth
+
+    for tok in function:
+        nparam = config.get_num_param(tok.type)
+        if nparam == 0:
+            _attach(1)
+        else:
+            stack.append([nparam, 0])
+    if stack or root_depth is None:
+        return None
+    return root_depth
+
+
 # --- The public function object ---------------------------------------------
 
 
@@ -366,13 +430,30 @@ class PolishNotationFunction:
     Construct from a string; malformed input raises :class:`MalformedFunction`.
     """
 
-    __slots__ = ("_function",)
+    __slots__ = ("_function", "_depth")
 
     def __init__(self, func_str: str) -> None:
         normal = _create_regular_notation_tokens(func_str)
         self._function: list[_Token] = _reorder_tokens_to_polish(normal)
         if _get_values_needed(self._function) != 0:
             raise MalformedFunction()
+        # Harness guard (M5.3), like MAX_EXPR_CHARS — not reference behavior:
+        # reject expressions whose evaluation tree is deeper than
+        # ``config.MAX_AST_DEPTH`` so ``evaluate``'s recursion (and every
+        # consumer's parse: Game.fire, agents.simulate_tool, solver._verify,
+        # ccf._fired_curve, the UI server) can never blow the stack. Real
+        # CCF emissions peak at depth ~9; see docs/OPEN_QUESTIONS.md (k).
+        depth = _prefix_depth(self._function)
+        if depth is None or depth > config.MAX_AST_DEPTH:
+            raise MalformedFunction()
+        self._depth = depth
+
+    def depth(self) -> int:
+        """The evaluation-tree depth: 1 for a bare literal/variable, one more
+        per operator level (M5.3: always <= ``config.MAX_AST_DEPTH`` — the
+        constructor rejects anything deeper). Observable for emission-budget
+        accounting; the reference has no counterpart."""
+        return self._depth
 
     def tokens(self) -> tuple[tuple[int, float | None], ...]:
         """The prefix (Polish) token list as ``(type, value)`` pairs (for

@@ -11,6 +11,8 @@ from __future__ import annotations
 import pytest
 
 from graphwar_sim import MalformedFunction, PolishNotationFunction
+from graphwar_sim import config
+from graphwar_sim.state import Game
 
 # (func, expected_value_at_x) — accepted, and evaluated at x=2.0.
 ACCEPT = [
@@ -98,3 +100,53 @@ def test_no_eval_or_exec_in_module() -> None:
     for bad in ("eval(", "exec("):
         # ``evaluate(`` contains ``eval`` but not ``eval(`` (it's ``evaluate(``).
         assert bad not in src, f"parser.py appears to call {bad}"
+
+
+# --- M5.3: AST depth cap (config.MAX_AST_DEPTH; docs/OPEN_QUESTIONS.md (k)) ---
+
+
+def _chain(n: int) -> str:
+    """A left-linear ``1+1+…+1`` chain: evaluation-tree depth exactly ``n``."""
+    return "+".join(["1"] * n)
+
+
+def test_depth_cap_boundary() -> None:
+    """A tree exactly ``MAX_AST_DEPTH`` deep parses; one deeper is rejected as
+    MalformedFunction (the guard every consumer inherits)."""
+    f = PolishNotationFunction(_chain(config.MAX_AST_DEPTH))
+    assert f.evaluate(2.0) == float(config.MAX_AST_DEPTH)
+    with pytest.raises(MalformedFunction):
+        PolishNotationFunction(_chain(config.MAX_AST_DEPTH + 1))
+    with pytest.raises(MalformedFunction):
+        PolishNotationFunction(_chain(config.MAX_AST_DEPTH * 2))
+
+
+def test_char_budget_chain_rejected_not_recursionerror() -> None:
+    """A 1000-term chain fits inside MAX_EXPR_CHARS (1999 chars) but used to
+    RecursionError in ``_reorder_rec`` (probed pre-M5.3: 990 terms parsed,
+    1000 died at Python's 1000-frame limit). The depth cap rejects it as
+    ``MalformedFunction`` instead — the exception every consumer already
+    catches, so deep input can never crash a parse step again."""
+    expr = _chain(1000)
+    assert len(expr) <= config.MAX_EXPR_CHARS
+    with pytest.raises(MalformedFunction):
+        PolishNotationFunction(expr)
+
+
+def test_deep_bracket_chain_rejected() -> None:
+    """Bracket nesting is the second route to depth: 500 ``+(1 …)`` levels
+    (1997 chars, within the char budget) exceed the cap and are rejected."""
+    expr = "1" + "+(1" * 499 + ")" * 499
+    assert len(expr) <= config.MAX_EXPR_CHARS
+    with pytest.raises(MalformedFunction):
+        PolishNotationFunction(expr)
+
+
+def test_game_fire_rejects_depth_cap_expression() -> None:
+    """``Game.fire`` constructs the function unguarded (state.py); with the
+    M5.3 parser cap a depth-exceeding expression raises the catchable
+    ``MalformedFunction`` there (it used to RecursionError past every
+    ``except MalformedFunction`` and kill the match)."""
+    game = Game.create(7, num_soldiers=1)
+    with pytest.raises(MalformedFunction):
+        game.fire(_chain(config.MAX_AST_DEPTH + 1))

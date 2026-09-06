@@ -209,12 +209,23 @@ _OUTCOME_PRECEDENCE: dict[CCFOutcome, int] = {
 
 @dataclass(frozen=True)
 class EmissionBudget:
-    """The emission budget derived from the real formatter (5.2.md §2)."""
+    """The emission budget derived from the real formatter (5.2.md §2).
+
+    ``j_max`` is the BINDING term budget: the minimum of the char-derived
+    ``j_max_chars`` and the depth-derived ``j_max_depth`` (M5.3 AST cap —
+    a balanced J-term sum evaluates at depth ``ceil(log2 J) + 3``, so the
+    depth limit admits ``J <= 2^(depth_limit - 3)``; at the shipped values
+    the char limit binds by many orders of magnitude, but the test reads
+    BOTH config constants so it breaks if either changes, 5.2.md §2 step 2).
+    """
 
     char_limit: int
+    depth_limit: int
     per_term_cost: int
     affine_cost: int
     safety: int
+    j_max_chars: int
+    j_max_depth: int
     j_max: int
 
 
@@ -277,13 +288,21 @@ class CCFResult:
 # --- Emission budget (5.2.md §2) ---------------------------------------------
 
 
-def emission_budget(char_limit: int = config.MAX_EXPR_CHARS) -> EmissionBudget:
+def emission_budget(
+    char_limit: int = config.MAX_EXPR_CHARS, depth_limit: int = config.MAX_AST_DEPTH
+) -> EmissionBudget:
     """Derive ``J_max`` from the REAL formatter, not a guess (5.2.md §2).
 
     One representative Gaussian term (negative weight, negative centre, the
     coarsest ladder sigma) is emitted and measured; ``+3`` per term accounts
     for the balanced tree's ``+()`` wrapper share. The affine cost is measured
     the same way from representative slope/constant magnitudes.
+
+    M5.3: the budget has a second dimension — ``depth_limit`` (the parser's
+    AST-depth cap, ``config.MAX_AST_DEPTH``). The balanced tree evaluates at
+    depth ``ceil(log2 J) + 3`` (tests/test_emission.py), which admits
+    ``J <= 2^(depth_limit - 3)``; the term budget is the min of the two
+    dimensions. At the shipped values the char limit binds.
     """
     per_term = len(gauss_term(-1.0, -12.3456, _sigma_b(_SIGMA_LADDER[0]))) + 3
     affine = (
@@ -291,13 +310,18 @@ def emission_budget(char_limit: int = config.MAX_EXPR_CHARS) -> EmissionBudget:
         + len(f"({format_literal(-12.345678901234)})")
         + 6  # both affine terms' balanced-tree wrappers
     )
-    j_max = (char_limit - affine - _EXPR_CHARS_SAFETY) // per_term
+    j_max_chars = (char_limit - affine - _EXPR_CHARS_SAFETY) // per_term
+    # ceil(log2 J) <= depth_limit - 3  <=>  J <= 2^(depth_limit - 3).
+    j_max_depth = 1 << max(0, depth_limit - 3) if depth_limit >= 3 else 0
     return EmissionBudget(
         char_limit=char_limit,
+        depth_limit=depth_limit,
         per_term_cost=per_term,
         affine_cost=affine,
         safety=_EXPR_CHARS_SAFETY,
-        j_max=max(0, int(j_max)),
+        j_max_chars=max(0, int(j_max_chars)),
+        j_max_depth=j_max_depth,
+        j_max=max(0, min(int(j_max_chars), j_max_depth)),
     )
 
 

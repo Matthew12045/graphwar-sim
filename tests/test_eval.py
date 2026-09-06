@@ -66,6 +66,45 @@ def test_play_match_winner_is_surviving_side() -> None:
             assert result.winner in (1, 2)
 
 
+# --- M5.3: a deep expression is a PARSE_ERROR turn, not a crashed match -------
+
+
+def test_deep_expression_classified_parse_error_no_crash() -> None:
+    """A deep-but-in-char-budget expression used to RecursionError out of the
+    unguarded ``Game.fire`` and kill the match. With the M5.3 parser cap it
+    raises ``MalformedFunction``, which the runner catches: the turn is
+    classified ``PARSE_ERROR``, the safe dud ``0*x`` is fired in its place,
+    and the match completes (eval/runner.py's defensive block)."""
+    from agents.base import Observation
+    from graphwar_sim import Game, config
+
+    deep = "+".join(["1"] * (config.MAX_AST_DEPTH + 1))
+    assert len(deep) <= config.MAX_EXPR_CHARS
+
+    class DeepAgent:
+        """Always emits a depth-cap-exceeding expression (M5.3 regression)."""
+
+        name = "deep"
+
+        def __init__(self) -> None:
+            self._stats = AgentStats()
+
+        def act(self, game: Game, obs: Observation) -> str:
+            return deep
+
+        def stats(self) -> AgentStats:
+            return self._stats
+
+    result = play_match(11, DeepAgent(), StraightShotAgent(), _small_config())
+    deep_stats = result.stats["deep"]
+    assert deep_stats.parse_failures >= 1
+    parse_error_shots = [s for s in result.shots if s.outcome == "PARSE_ERROR"]
+    assert parse_error_shots, "the deep attempt was not classified PARSE_ERROR"
+    assert all(s.expression == deep and s.parse_failure for s in parse_error_shots)
+    # The safe dud replaced the deep fire as the turn's actual shot.
+    assert result.winner is not None or result.draw_reason in ("TURN_CAP", "STALEMATE")
+
+
 # --- Plan / side balance -----------------------------------------------------
 
 
