@@ -210,13 +210,16 @@ def test_cell_wise_envelope_catches_a_synthetic_spike() -> None:
     bounds = _cell_du_bounds(mx, my, targets, teammates, circles, du)
     assert bounds is not None
     L, H = bounds
-    # The spike (px 297..303) intersects the cells covering world x in
-    # [-5.72, -5.45]; their floor must rise above the circle's extremal top
-    # (world y +0.259 = row 222 top edge) — the pointwise view admitted y=0.
+    # The spike (px 297..303, world y band ~[-0.26, +0.26]) intersects the
+    # cells covering world x in [-5.72, -5.45]. The cell-wise envelope must
+    # EXCLUDE the spike's y-range at those samples — the chain rides under it
+    # (ceiling pulled below -0.19) or over it (floor raised above +0.19). The
+    # pointwise view admitted y=0 (the full band).
     affected = [k for k in range(len(L)) if abs(-20.0 + k * du - (-5.52)) <= du]
     assert affected, "expected the spike's cells to be sampled"
     for k in affected:
-        assert L[k] > 0.15, f"cell {k}: floor {L[k]} did not rise above the spike"
+        clears_spike = H[k] <= -0.19 + 1e-9 or L[k] >= 0.19 - 1e-9
+        assert clears_spike, f"cell {k}: envelope [{L[k]:.4f}, {H[k]:.4f}] still admits the spike"
     # Far from the spike the envelope stays at the full band.
     assert L[0] < -10.0 and H[0] > 10.0
 
