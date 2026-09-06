@@ -1,12 +1,16 @@
 """M3: Graphwar agents.
 
 Minimal viable slice (IMPLEMENTATION_PLAN.md §"Recommended first milestone"):
-a deterministic solver agent plus two baselines, headless, no LLM. The plan's
-``LLMAgent`` / ``HybridAgent`` and the style prompts are deferred.
+a deterministic solver agent plus two baselines, headless, no LLM.
 
 M5.3 adds the simulate budget wrapper (:class:`BudgetedSimulator`) around the
 untouched pure oracle — per-turn call budget + ledger for the M5.4/M5.5
-consume side (no simulate-consuming agent exists yet).
+consume side.
+
+M5.4 adds :class:`LLMAgent` — the Anthropic tool-use shot generator over the
+budgeted simulate tool (optional ``anthropic`` extra, lazily imported; safe
+to import without it). ``HybridAgent`` and the persona style prompts remain
+deferred (the separate personas workstream).
 
 Public surface:
     - :class:`Observation`, :class:`AgentStats`, :class:`AgentProto` protocol
@@ -14,6 +18,7 @@ Public surface:
     - :func:`agents.simulate_tool.simulate` (pure physics oracle)
     - :class:`agents.simulate_budget.BudgetedSimulator` (per-turn budget)
     - :class:`SolverAgent`, :class:`RandomAgent`, :class:`StraightShotAgent`
+    - :class:`LLMAgent` (Anthropic tool-use; optional ``anthropic`` extra)
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from .base import (
 )
 from .baselines import RandomAgent, StraightShotAgent
 from .emission import format_literal
+from .llm_agent import LLMAgent
 from .observation import observe
 from .simulate_budget import (
     DEFAULT_SIMULATE_BUDGET,
@@ -45,6 +51,7 @@ __all__ = [
     "DEFAULT_SIMULATE_BUDGET",
     "Observation",
     "FRAME_CENTERED_WORLD",
+    "LLMAgent",
     "RandomAgent",
     "SimResult",
     "SimulateBudgetExhausted",

@@ -28,6 +28,9 @@ ui = [
     "uvicorn>=0.29",
     "httpx>=0.27",  # TestClient transport for tests/test_ui_server.py
 ]
+llm = [
+    "anthropic>=0.40",  # optional: only agents/llm_agent.py imports it (lazily)
+]
 
 [tool.setuptools.packages.find]
 include = ["graphwar_sim*", "agents*", "eval*", "ui*"]
@@ -60,3 +63,9 @@ python_version = "3.11"
 strict = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# agents/llm_agent.py imports the anthropic SDK lazily (optional dependency);
+# it must typecheck with or without the extra installed.
+module = "anthropic.*"
+ignore_missing_imports = true
