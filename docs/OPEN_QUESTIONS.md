@@ -233,6 +233,86 @@ Re-running from the seed file reproduces ``leaderboard.md`` **byte-for-byte**
 *bytes* are not asserted: matplotlib output can vary with library version and
 font cache while carrying identical data.
 
+## M5: corridor sweep, taxonomy split — findings (reported before M5.2)
+
+Status: all three items below were answered from the reference source and
+from measurements; none is a placeholder.
+
+### (d) Pre-fire movement — RESOLVED: soldiers never move during a match
+
+**Question (M5.1):** does the real game let a soldier MOVE before firing? If
+yes and the sim omits it, some PASS_UNREACHABLE verdicts would be simulator
+artifacts.
+
+**Answer: No. A turn is type-a-function-and-fire; there is no movement step.**
+Citations:
+- ``Player.java`` has no movement API — only ``startSoldier(x, y)`` (pre-game
+  placement) and ``nextTurn()`` soldier cycling.
+- ``GameScreen.java:570-610`` — all mouse handlers are ``TODO`` stubs;
+  ``RoomBoard.mouseDragged`` (RoomBoard.java:204) is a stub too.
+- ``NetworkProtocol.java:31-38`` — the protocol has ``ADD_SOLDIER`` /
+  ``SET_SOLDIER`` (pre-game) and ``FIRE_FUNC``, but no move message.
+- The README describes the only in-game action: type ``y = f(x)``.
+
+Consequence: the sim's no-movement model is faithful; PASS_UNREACHABLE is
+not a movement artifact. (The real game lets players CHOOSE placement
+pre-game; our seeded random placement is a ``# TUNABLE`` stand-in and can
+create positions a human would not pick — a map-generation modeling choice,
+recorded, not a physics gap.)
+
+### (e) Expression character limit — RESOLVED: the reference has none
+
+**Question (5.2.md §0):** the CCF emission budget needs the game's character
+limit.
+
+**Answer: the reference imposes no expression length limit.** The function
+input is a plain ``JTextField`` with no ``DocumentFilter`` (GameScreen.java:101,
+GraphUtil.makeTextField — the config "columns" value is a width hint, not a
+limit); the function travels URL-encoded over a line-based socket protocol
+(GameData.java:323, ``readMessage``) with no length check anywhere. The
+harness therefore uses a defensive ``# TUNABLE`` cap (``MAX_EXPR_CHARS``,
+not from source) for the CCF emission budget; the test asserts it reads the
+cap from config so the test breaks if the cap changes.
+
+### (f) The corridor refutes the M2 "genuine limit" seeds — a measurement, not a tune
+
+**Finding:** the M2 report classified seeds 2, 18, 20, 23, 27, 32 (2×2 config)
+as a "genuine physical limit: no monotone-x path clears the terrain." The
+M5.1 corridor sweep (with the Phase-0-derived slope cap, which provably
+contains every surviving trajectory) finds all of them **reachable**: the
+sweep is empty only when some column of the free set is entirely blocked
+(a terrain/disk wall spanning the whole band), and the seeded generator
+(mean circle radius 40px) essentially never produces such a wall. The M2
+judgment was correct only for the *quadratic-arc family* (the arc rung's
+sweep range): the six seeds are **fit gaps**, not physical limits. The dud
+bucket therefore splits mostly into `SOLVER_FAILED` (corridor-reachable,
+ladder failed) with `PASS_UNREACHABLE` structurally rare on seeded maps
+(observed: 0/300 seeds at 1/2/4 soldiers; the taxonomy machinery is tested
+with a synthetic full-wall board). Reported, not tuned away.
+
+### (g) Slope cap: the derived default never binds in real games
+
+``S = sqrt(FUNC_MAX_STEP_DISTANCE_SQUARED) / FUNC_MIN_X_STEP_DISTANCE ≈ 3162``
+(derivation in ``corridor.py``: the max |dy/dx| a surviving trajectory can
+exhibit before the integrator's halving floor kills it). With
+``S·du = 31.6 > band height 29.16``, R fills the entire band within ~1
+column: the cap binds only within the first ~`band_height/(S·du)` columns of
+the muzzle, and enemies are ≥ ~1.3 world units away. So the sweep degenerates
+to a geometric threading test, which is exactly the intended proof: any
+monotone-x curve is slope-feasible; only full walls block. Tested directly
+(`test_slope_cap_semantics`)
+
+### (h) CCF teammate-disk inflation (5.2.md §5) — recorded consequence
+
+The CCF cell envelope excludes teammate disks with ``SOLDIER_RADIUS +
+EXPLOSION_RADIUS = 19px`` per 5.2.md §5 (M5.1's sweep keeps the Phase 0 hit
+radius 7px). Consequence: the inflated disk can in principle exclude a legal
+safe shot in a corridor between two teammates (20px Chebyshev spacing vs a
+19px exclusion disk). The solver's self-verification remains the final
+authority; a false-unreachable costs a turn, never a wrong shot.
+
+---
+
 ## Genuinely open (deferred to later milestones)
 
 - **Token-cost / ablation metrics (M4).** The minimal viable slice skips

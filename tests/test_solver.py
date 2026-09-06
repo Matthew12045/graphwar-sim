@@ -18,7 +18,8 @@ from graphwar_sim import Game
 from graphwar_sim.parser import PolishNotationFunction
 from graphwar_sim.solver import (
     RUNG_ARC,
-    RUNG_DUD,
+    RUNG_PASS_UNREACHABLE,
+    RUNG_SOLVER_FAILED,
     SolverResult,
     _gauss_expression,
     run_battery,
@@ -94,7 +95,8 @@ def test_battery_hit_rate_and_rung_distribution_logged() -> None:
         "line",
         "parabola",
         RUNG_ARC,
-        RUNG_DUD,
+        RUNG_PASS_UNREACHABLE,
+        RUNG_SOLVER_FAILED,
     }
     rungs = {r.rung for r in results}
     assert rungs <= known_rungs
@@ -159,16 +161,70 @@ def test_arc_rung_clears_terrain_the_cheaper_rungs_cannot() -> None:
         assert r.parseable and r.certified
 
 
-def test_dud_rung_hits_nothing() -> None:
-    """When the ladder reaches the dud rung, the shot hits no one."""
-    # Find a seed whose solve lands on the dud rung, then confirm the dud is
-    # clean (no enemy, no teammate).
-    dud_seeds = [r.seed for r in run_battery(range(1, 41), num_soldiers=4) if r.rung == RUNG_DUD]
-    assert dud_seeds, "expected at least one seed to degrade to the dud rung"
-    for seed in dud_seeds:
+def test_pass_unreachable_on_full_wall() -> None:
+    """PASS_UNREACHABLE fires when the corridor proves no monotone-x path
+    exists: a terrain wall spanning the whole vertical band between the teams
+    is such a proof. The solver passes (safe flat dud), not a solver failure.
+    """
+    from graphwar_sim.corridor import reachability
+    from graphwar_sim.physics import Soldier as PhysSoldier
+    from graphwar_sim.state import GameState, Team, make_circle_obstacle
+
+    wall = [(385, 225, 230)]  # px 155..615: the full vertical band at its core
+    game = Game(
+        GameState(
+            teams=[
+                Team(name="t1", team=1, soldiers=[PhysSoldier(x=50.0, y=400.0, alive=True)]),
+                Team(name="t2", team=2, soldiers=[PhysSoldier(x=720.0, y=50.0, alive=True)]),
+            ],
+            current_turn=0,
+        ),
+        make_circle_obstacle(wall),
+        wall,
+    )
+    assert not any(r.reachable for r in reachability(game))
+    result = solve(game)
+    assert result.rung == RUNG_PASS_UNREACHABLE
+    # The pass turn's emission is a safe flat dud that hits no one.
+    shot = game.fire(result.expression)
+    assert shot.hits == []
+
+
+def test_solver_failed_seeds_are_corridor_reachable() -> None:
+    """The corridor refutes the M2 claim that six 2-soldier seeds are a
+    genuine physical limit: those seeds are reachable by an arbitrary
+    monotone-x path and the dud bucket's other half (SOLVER_FAILED) is a fit
+    gap, recorded here as the M5.1 finding (docs/OPEN_QUESTIONS.md)."""
+    from graphwar_sim.corridor import reachability
+
+    results = run_battery(range(1, 41), num_soldiers=2)
+    failed = [r for r in results if r.rung == RUNG_SOLVER_FAILED]
+    assert failed, "expected SOLVER_FAILED seeds on the 2-soldier battery"
+    for r in failed:
+        game = Game.create(r.seed, num_soldiers=2)
+        assert any(x.reachable for x in reachability(game)), (
+            f"seed {r.seed}: SOLVER_FAILED but corridor says unreachable"
+        )
+
+
+def test_unreachable_proof_is_against_the_whole_ladder() -> None:
+    """On a PASS_UNREACHABLE map no solver rung can land a clean hit — the
+    corridor pre-check is a proof, not a solver failure. Assert by firing the
+    whole ladder directly and confirming nothing hits."""
+    from graphwar_sim.corridor import reachability
+    from graphwar_sim.solver import _build_frame, _ordered_candidates, _verify
+
+    results = run_battery(range(1, 41), num_soldiers=4)
+    pass_seeds = [r.seed for r in results if r.rung == RUNG_PASS_UNREACHABLE]
+    if not pass_seeds:
+        return  # nothing to prove on this battery range; see the wall test
+    for seed in pass_seeds:
         game = Game.create(seed, num_soldiers=4)
-        shot = game.fire(solve(game).expression)
-        assert shot.hits == [], f"seed {seed}: dud rung hit someone"
+        assert not any(x.reachable for x in reachability(game))
+        frame = _build_frame(game)
+        for cand in _ordered_candidates(frame):
+            hit_e, hit_t, _r = _verify(game, frame, cand)
+            assert not hit_e and not hit_t, f"seed {seed}: reachable candidate on unreachable map"
 
 
 # --- Security: no eval/exec in the solver hot path ---------------------------

@@ -106,9 +106,7 @@ def _get_start_angle(f: PolishNotationFunction, x: float, radius: float) -> floa
     """
     angle = 0.0
 
-    start_tangent = (
-        f.evaluate(x + config.STEP_SIZE) - f.evaluate(x)
-    ) / config.STEP_SIZE
+    start_tangent = (f.evaluate(x + config.STEP_SIZE) - f.evaluate(x)) / config.STEP_SIZE
     angle = math.atan(start_tangent)
 
     error = 10000.0

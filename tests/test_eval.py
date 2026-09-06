@@ -15,8 +15,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agents import RandomAgent, SolverAgent, StraightShotAgent
+from agents import AgentStats, RandomAgent, SolverAgent, StraightShotAgent
 from eval.runner import (
+    _STALL_LIMIT,
     MatchConfig,
     build_plan,
     play_match,
@@ -51,11 +52,16 @@ def test_play_match_deterministic() -> None:
 
 def test_play_match_winner_is_surviving_side() -> None:
     """When a match ends with a winner, the recorded winner's team has soldiers
-    alive and the loser's team is wiped (or the turn cap was hit -> None)."""
+    alive and the loser's team is wiped; a draw carries a specific reason
+    (turn cap or stalemate, M5.1)."""
     for seed in (1, 2, 3):
         result = play_match(seed, SolverAgent(), StraightShotAgent(), _small_config())
         if result.winner is None:
-            assert result.turns == _small_config().max_turns
+            assert result.draw_reason in ("TURN_CAP", "STALEMATE")
+            if result.draw_reason == "TURN_CAP":
+                assert result.turns == _small_config().max_turns
+            else:
+                assert result.turns < _small_config().max_turns
         else:
             assert result.winner in (1, 2)
 
@@ -125,6 +131,117 @@ def test_leaderboard_reports_hit_rate(tmp_path: Path) -> None:
     assert solver.shots > 0 and solver.hit_rate > 0.0
     for name in DEFAULT_ROSTER:
         assert by_name[name].shots > 0
+
+
+def test_outcome_taxonomy_records_every_turn(tmp_path: Path) -> None:
+    """Every recorded shot carries one of the six M5.1 outcomes, and the
+    per-agent counters are consistent with the recorded outcomes."""
+    from eval.metrics import ShotOutcome
+
+    leaderboard = run_leaderboard(
+        root_seed=2000,
+        roster=DEFAULT_ROSTER,
+        n_matches=1,
+        config=_small_config(),
+        out_dir=tmp_path / "tax",
+    )
+    outcomes = {ShotOutcome(x.outcome) for m in leaderboard.matches for x in m.shots}
+    assert outcomes <= set(ShotOutcome)
+    assert ShotOutcome.HIT in outcomes
+    for m in leaderboard.matches:
+        for name, st in m.stats.items():
+            mine = sum(1 for x in m.shots if x.agent == name)
+            assert st.shots == mine  # every recorded shot is counted once
+            # Outcome counters count ALL classified turns (suppressed repeats
+            # included), so they are >= the recorded-shot counts.
+            mine_passes = sum(
+                1
+                for x in m.shots
+                if x.agent == name and x.outcome == ShotOutcome.PASS_UNREACHABLE.value
+            )
+            assert st.pass_unreachable >= mine_passes
+            assert st.solver_failed >= sum(
+                1
+                for x in m.shots
+                if x.agent == name and x.outcome == ShotOutcome.SOLVER_FAILED.value
+            )
+
+
+class _PassingAgent:
+    """Test double: always passes (PASS_UNREACHABLE rung, safe flat dud).
+
+    Exercises the runner's classification / dedupe / stalemate machinery on
+    real matches without needing a full-wall map (which the seeded generator
+    essentially never produces — a documented M5.1 finding).
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self._stats = AgentStats()
+        self.rung_history: list[str] = []
+
+    def act(self, game, obs) -> str:  # type: ignore[no-untyped-def]
+        from graphwar_sim.solver import RUNG_PASS_UNREACHABLE
+
+        self.rung_history.append(RUNG_PASS_UNREACHABLE)
+        return "0*x"
+
+    def stats(self) -> AgentStats:
+        return self._stats
+
+
+def test_passer_match_classifies_every_turn() -> None:
+    """A match of two passing agents: every turn is PASS_UNREACHABLE, the
+    shots never count (hit rate 0/0), the repeats are suppressed, and the
+    match ends as DRAW_STALEMATE before the turn cap."""
+    seed = 7
+    r = play_match(seed, _PassingAgent("passer_a"), _PassingAgent("passer_b"), _small_config())
+    for st in r.stats.values():
+        # Two pass turns per agent (one recorded, one suppressed repeat).
+        assert st.pass_unreachable == 2
+        assert st.enemy_hit_shots == 0
+        assert st.shots == 1  # only the first of each identical pair
+        assert st.repeat_suppressed == 1
+    assert r.draw_reason == "STALEMATE"
+    assert r.winner is None
+    assert r.turns == _STALL_LIMIT  # ends exactly at the stall limit
+    assert all(x.outcome == "PASS_UNREACHABLE" for x in r.shots)
+
+
+def test_dedupe_suppresses_identical_repeats() -> None:
+    """Same board state + same expression on an agent's next turn is not a new
+    attempt: repeat_suppressed grows and the shot counter does not."""
+    r = play_match(7, _PassingAgent("passer_a"), _PassingAgent("passer_b"), _small_config())
+    # Turn 0 (T1) and 1 (T2) are recorded; turns 2 (T1 again) and 3 (T2 again)
+    # repeat the identical (state, expression) pair and are suppressed.
+    for st in r.stats.values():
+        assert st.shots == 1
+        assert st.repeat_suppressed == 1
+
+
+def test_stalemate_ends_match_as_draw_distinct_from_cap(tmp_path: Path) -> None:
+    """Consecutive PASS_UNREACHABLE from both teams ends the match early as
+    DRAW_STALEMATE — distinct from the turn-cap draw (which the solver-vs-
+    solver non-passing board still produces, e.g. cap-length matches)."""
+    r = play_match(7, _PassingAgent("passer_a"), _PassingAgent("passer_b"), _small_config())
+    assert r.draw_reason == "STALEMATE"
+    assert r.winner is None
+    assert r.turns <= _STALL_LIMIT
+
+    # Control: a real cap draw (stalemate can only come from the pass rule).
+    cap_seen = False
+    for seed in (1, 11, 21, 31, 41, 51, 71, 91, 101, 121):
+        from graphwar_sim import Game as G
+        from graphwar_sim.corridor import reachability
+
+        g = G.create(seed, num_soldiers=1)
+        if any(x.reachable for x in reachability(g)):
+            r2 = play_match(seed, SolverAgent(), RandomAgent(seed=seed), _small_config())
+            if r2.draw_reason == "TURN_CAP":
+                cap_seen = True
+                assert r2.turns == _small_config().max_turns
+                break
+    assert cap_seen, "expected a turn-cap draw from the real solver roster"
 
 
 # --- Reproducibility from the seed file alone --------------------------------
@@ -197,3 +314,6 @@ def test_full_roster_matches_play_headless(tmp_path: Path) -> None:
     r = simulate(game, "0.05*x")
     assert r.parseable
     assert isinstance(r.num_steps, int)
+
+
+# --- M5.1 taxonomy: outcomes, dedupe, stalemate ------------------------------

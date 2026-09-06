@@ -73,8 +73,11 @@ def _replay(scenario: dict) -> dict:
     shooter: Soldier | None = None
     for i, (sx, sy, alive) in enumerate(scenario["soldiers"]):
         s = Soldier(
-            x=float(sx), y=float(sy), alive=bool(alive),
-            player_index=i, soldier_index=0,
+            x=float(sx),
+            y=float(sy),
+            alive=bool(alive),
+            player_index=i,
+            soldier_index=0,
         )
         soldiers.append(s)
         if (sx, sy) == tuple(shooter_xy):
@@ -103,31 +106,32 @@ def test_shot_parity(scenario: dict) -> None:
 
     # numSteps must match exactly (it drives the point count and lastX/lastY).
     assert got["numSteps"] == ref["numSteps"], (
-        f"{scenario['name']}: numSteps {got['numSteps']} != {ref['numSteps']}")
+        f"{scenario['name']}: numSteps {got['numSteps']} != {ref['numSteps']}"
+    )
 
     assert _close(got["lastX"], ref["lastX"]), (
-        f"{scenario['name']}: lastX {got['lastX']!r} != {ref['lastX']!r}")
+        f"{scenario['name']}: lastX {got['lastX']!r} != {ref['lastX']!r}"
+    )
     assert _close(got["lastY"], ref["lastY"]), (
-        f"{scenario['name']}: lastY {got['lastY']!r} != {ref['lastY']!r}")
+        f"{scenario['name']}: lastY {got['lastY']!r} != {ref['lastY']!r}"
+    )
 
     # Hits: exact (player, soldier, position) triples, in order.
-    assert got["hits"] == ref["hits"], (
-        f"{scenario['name']}: hits {got['hits']} != {ref['hits']}")
+    assert got["hits"] == ref["hits"], f"{scenario['name']}: hits {got['hits']} != {ref['hits']}"
 
     # Trajectory: same length, each point within tolerance.
     assert len(got["points"]) == len(ref["points"]), (
-        f"{scenario['name']}: {len(got['points'])} points != {len(ref['points'])}")
+        f"{scenario['name']}: {len(got['points'])} points != {len(ref['points'])}"
+    )
     for i, (gp, rp) in enumerate(zip(got["points"], ref["points"], strict=True)):
         if not (_close(gp[0], rp[0]) and _close(gp[1], rp[1])):
             # Raise (not `assert False`, which `-O` strips) with the first
             # divergent point for a compact, actionable message.
-            raise AssertionError(
-                f"{scenario['name']}: point {i} {gp} != {rp}")
+            raise AssertionError(f"{scenario['name']}: point {i} {gp} != {rp}")
 
 
 def test_at_least_20_scenarios() -> None:
-    assert len(SCENARIOS) >= 20, (
-        f"expected >=20 golden scenarios, found {len(SCENARIOS)}")
+    assert len(SCENARIOS) >= 20, f"expected >=20 golden scenarios, found {len(SCENARIOS)}"
 
 
 def test_required_dimensions_covered() -> None:

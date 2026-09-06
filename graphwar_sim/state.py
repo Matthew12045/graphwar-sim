@@ -87,9 +87,7 @@ class GameState:
         return self.teams[self.current_turn]
 
     def _team_alive(self, team_id: int) -> bool:
-        return any(
-            s.alive for t in self.teams if t.team == team_id for s in t.soldiers
-        )
+        return any(s.alive for t in self.teams if t.team == team_id for s in t.soldiers)
 
     def check_game_finished(self) -> bool:
         """Port of ``checkGameFinished`` (GameData.java:512-545).
@@ -175,9 +173,15 @@ class Game:
     match layer: who fires, in what order, and when the game ends.
     """
 
-    def __init__(self, state: GameState, terrain: Obstacle) -> None:
+    def __init__(
+        self, state: GameState, terrain: Obstacle, circles: list[tuple[int, int, int]] | None = None
+    ) -> None:
         self.state = state
         self.terrain = terrain
+        # Terrain circles in plane px (cx, cy, r). Retained so the corridor
+        # sweep can compute exact free intervals instead of sampling the
+        # obstacle grid (graphwar_sim/corridor.py).
+        self.circles: list[tuple[int, int, int]] = circles if circles is not None else []
 
     # -- construction -------------------------------------------------------
 
@@ -198,7 +202,11 @@ class Game:
         rng = random.Random(seed)
         circles, soldiers_by_team = generate_map(rng, num_teams, num_soldiers, num_circles)
         terrain = make_circle_obstacle(circles)
-        return cls(state=GameState(teams=soldiers_by_team, current_turn=0), terrain=terrain)
+        return cls(
+            state=GameState(teams=soldiers_by_team, current_turn=0),
+            terrain=terrain,
+            circles=circles,
+        )
 
     # -- queries ------------------------------------------------------------
 
@@ -233,9 +241,7 @@ class Game:
         shooter = team.current_soldier()
         f = PolishNotationFunction(func_str)
         inverted = team.team == config.TEAM2
-        result = process_function_range(
-            f, shooter, self.all_soldiers(), self.terrain, inverted
-        )
+        result = process_function_range(f, shooter, self.all_soldiers(), self.terrain, inverted)
         # Apply kills (GameData.java:1102-1111).
         for player_index, soldier_index, _pos in result.hits:
             self.state.teams[player_index].soldiers[soldier_index].alive = False
@@ -293,21 +299,15 @@ def generate_map(
 
 def _draw_num_circles(rng: random.Random) -> int:
     """Circle count from the reference distribution (Obstacle.java:70-77)."""
-    n = int(
-        rng.gauss(config.NUM_CIRCLES_MEAN_VALUE, config.NUM_CIRCLES_STANDARD_DEVIATION)
-    )
+    n = int(rng.gauss(config.NUM_CIRCLES_MEAN_VALUE, config.NUM_CIRCLES_STANDARD_DEVIATION))
     while n < 0:
-        n = int(
-            rng.gauss(config.NUM_CIRCLES_MEAN_VALUE, config.NUM_CIRCLES_STANDARD_DEVIATION)
-        )
+        n = int(rng.gauss(config.NUM_CIRCLES_MEAN_VALUE, config.NUM_CIRCLES_STANDARD_DEVIATION))
     return n
 
 
 def _draw_circle_radius(rng: random.Random) -> int:
     """Circle radius from the reference distribution (Constants.java:66-67)."""
-    r = int(
-        rng.gauss(config.CIRCLE_MEAN_RADIUS, config.CIRCLE_STANDARD_DEVIATION)
-    )
+    r = int(rng.gauss(config.CIRCLE_MEAN_RADIUS, config.CIRCLE_STANDARD_DEVIATION))
     while r < 1:
         r = int(rng.gauss(config.CIRCLE_MEAN_RADIUS, config.CIRCLE_STANDARD_DEVIATION))
     return r
@@ -347,9 +347,7 @@ def _place_soldier(
             for dx, dy in ((0, 0), (radius, 0), (-radius, 0), (0, radius), (0, -radius))
         ):
             continue
-        if any(
-            abs(x - p.x) < min_gap or abs(y - p.y) < min_gap for p in placed
-        ):
+        if any(abs(x - p.x) < min_gap or abs(y - p.y) < min_gap for p in placed):
             continue
         return x, y
 

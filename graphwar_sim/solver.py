@@ -95,13 +95,17 @@ _ARC_A_STEP: float = 0.005
 # Integration step used for the certification bound (Constants.java:88).
 _DU: float = config.STEP_SIZE
 
-# Rung labels (Phase 4 metric).
+# Rung labels (M5.1 taxonomy — replaces the single ``dud`` bucket).
 RUNG_PER_TARGET = "per_target_gaussian"
 RUNG_FIXED_GRID = "fixed_grid_gaussian"
 RUNG_LINE = "line"
 RUNG_PARABOLA = "parabola"
 RUNG_ARC = "arc"
-RUNG_DUD = "dud"
+# M5.1: the corridor pre-check proved no monotone-x trajectory can reach any
+# enemy (PASS_UNREACHABLE) vs. a reachable target the ladder failed to convert
+# (SOLVER_FAILED). The old ``dud`` bucket collapsed these two events.
+RUNG_PASS_UNREACHABLE = "PASS_UNREACHABLE"
+RUNG_SOLVER_FAILED = "SOLVER_FAILED"
 
 
 @dataclass
@@ -356,17 +360,14 @@ def _arc_grid() -> list[float]:
 
 
 def _dud_candidates() -> list[_Candidate]:
-    """Deliberate safe duds (last resort): flat / steep-up / shallow-arc.
+    """Safe fall-back expressions: a flat line at muzzle height (M5.1: emitted
+    only as a PASS_UNREACHABLE / SOLVER_FAILED placeholder, never as a rung).
 
-    A flat line at the muzzle height travels horizontally and, on the seeded
-    maps, stops at terrain or the map edge without reaching any enemy (which
-    are on the far side). Each is still self-verified to hit nothing.
+    A flat line travels horizontally and, on unreachable maps, stops at terrain
+    or the map edge without reaching any enemy; it is still self-verified
+    before emission.
     """
-    return [
-        _Candidate(expression="0*x", rung=RUNG_DUD, m_bound=0.0),
-        _Candidate(expression="(0.05)*x", rung=RUNG_DUD, m_bound=0.0),
-        _Candidate(expression="(0.001)*x*(x-25)", rung=RUNG_DUD, m_bound=0.002),
-    ]
+    return [_Candidate(expression="0*x", rung=RUNG_PASS_UNREACHABLE, m_bound=0.0)]
 
 
 def _ordered_candidates(frame: _Frame) -> list[_Candidate]:
@@ -375,11 +376,16 @@ def _ordered_candidates(frame: _Frame) -> list[_Candidate]:
     The multi-target Gaussian rungs lead (the plan's intended primary basis,
     and the only rung that can multi-kill): per-target-centre Gaussians first,
     then the closed-form single-target rungs (parabola, line), then the plan's
-    named fixed-grid basis, and finally the safe duds. The fixed-grid rung is
-    kept low — and below the closed-form rungs — because on the seeded battery
-    its isolated hit rate trails the others and it is the only rung that
-    produced friendly fire (see ``docs/OPEN_QUESTIONS.md`` for the recorded
-    divergence from the plan's fixed-grid-primary ordering).
+    named fixed-grid basis, and finally the terrain-aware arc sweep. The
+    fixed-grid rung is kept low — and below the closed-form rungs — because on
+    the seeded battery its isolated hit rate trails the others and it is the
+    only rung that produced friendly fire (see ``docs/OPEN_QUESTIONS.md`` for
+    the recorded divergence from the plan's fixed-grid-primary ordering).
+
+    There is no ``dud`` rung in the ladder anymore (M5.1): an exhaust of the
+    ladder on a *reachable* map is recorded as ``RUNG_SOLVER_FAILED`` by
+    :func:`solve`, and an unreachable map is caught by the corridor pre-check
+    as ``RUNG_PASS_UNREACHABLE`` before any candidate is tried.
     """
     cands: list[_Candidate | None] = []
     for b in _B_WIDTHS:
@@ -393,7 +399,6 @@ def _ordered_candidates(frame: _Frame) -> list[_Candidate]:
     # only there. It generalises the parabola rung by sweeping curvature so the
     # curve can clear terrain (see docs/OPEN_QUESTIONS.md).
     cands.extend(_arc_candidates(frame))
-    cands.extend(_dud_candidates())
     return [c for c in cands if c is not None]
 
 
@@ -431,27 +436,46 @@ def _verify(game: Game, frame: _Frame, cand: _Candidate) -> tuple[bool, bool, Sh
 def solve(game: Game) -> SolverResult:
     """Solve the current turn: return a legal, self-verified expression.
 
-    Walks the degradation ladder and returns the first candidate that is
-    parseable, certified (finite bound), hits no teammate, and (for the
-    non-dud rungs) hits at least one enemy. The final rung is a safe dud that
-    hits nothing, so :func:`solve` always returns a parseable expression and
-    never raises for a well-formed :class:`Game`.
+    M5.1 flow:
+
+    1. **Corridor pre-check** (:mod:`graphwar_sim.corridor`): if no enemy is
+       reachable by any clean monotone trajectory, return a safe flat dud
+       classified ``RUNG_PASS_UNREACHABLE`` — a proof, not a solver failure.
+    2. Otherwise walk the degradation ladder and return the first candidate
+       that is parseable, certified (finite bound), hits no teammate, and hits
+       at least one enemy.
+    3. If the ladder exhausts on a *reachable* map, return the safe flat dud
+       classified ``RUNG_SOLVER_FAILED`` (a fit gap, distinct from
+       unreachable).
+
+    :func:`solve` always returns a parseable expression and never raises for a
+    well-formed :class:`Game`.
     """
     frame = _build_frame(game)
+    if frame.targets:
+        from . import corridor  # local import: corridor is a solver utility
+
+        any_reachable = any(r.reachable for r in corridor.reachability(game))
+        if not any_reachable:
+            dud = _dud_candidates()[0]
+            hit_enemy, hit_teammate, result = _verify(game, frame, dud)
+            if not hit_enemy and not hit_teammate:
+                return _make_result(dud, result, frame)
+            # Corridor says unreachable yet the flat dud self-verifies a hit:
+            # a contradiction (corridor model gap). Fall through to the ladder
+            # rather than misclassify the turn (recorded in OPEN_QUESTIONS if
+            # it ever fires).
     for cand in _ordered_candidates(frame):
         hit_enemy, hit_teammate, result = _verify(game, frame, cand)
         if hit_teammate:
             continue  # friendly fire — reject, fall through
-        if cand.rung == RUNG_DUD:
-            if not hit_enemy:
-                return _make_result(cand, result, frame)
-            continue  # a dud that somehow hit an enemy is not safe; try next
         if hit_enemy:
             return _make_result(cand, result, frame)
-    # Absolute fallback (should be unreachable: the flat dud hits nothing).
-    fallback = _Candidate(expression="0*x", rung=RUNG_DUD, m_bound=0.0)
-    _hit_e, _hit_t, result = _verify(game, frame, fallback)
-    return _make_result(fallback, result, frame)
+    # Ladder exhausted on a reachable (or corridor-unchecked) map: a solver
+    # gap, distinct from an unreachable target. Safe flat dud.
+    failed = _Candidate(expression="0*x", rung=RUNG_SOLVER_FAILED, m_bound=0.0)
+    _hit_e, _hit_t, result = _verify(game, frame, failed)
+    return _make_result(failed, result, frame)
 
 
 def _make_result(cand: _Candidate, result: ShotResult, frame: _Frame) -> SolverResult:

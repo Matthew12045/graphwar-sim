@@ -1,23 +1,51 @@
-"""Match-level and leaderboard-level metrics (Phase 4 / M4).
+"""Match-level and leaderboard-level metrics (M5.1).
 
-The minimal slice reports **win rate** and **hit rate** (IMPLEMENTATION_PLAN.md
-Phase 4). The per-agent row also carries the raw counters the rates are derived
-from, plus the M3 parse-failure / retry logging — all recorded per match by the
-runner and rolled up here. Token cost and ablations are explicitly out of scope.
+The outcome taxonomy replaces the old single ``dud`` bucket. Every turn is
+classified into exactly one :class:`ShotOutcome`:
+
+- ``HIT`` — fired and struck at least one enemy soldier.
+- ``MISS`` — fired and struck nobody (a teammate graze is still a MISS, and is
+  additionally counted as friendly fire).
+- ``PASS_UNREACHABLE`` — the M5.1 corridor pre-check proved no clean monotone
+  trajectory can reach any enemy; the turn is a pass, NOT a shot, and never
+  counts against hit rate.
+- ``SOLVER_FAILED`` — the corridor found a reachable target but the
+  degradation ladder could not convert it (a fit gap, distinct from
+  unreachable).
+- ``PARSE_ERROR`` — the emission failed to parse; the safe dud was fired in
+  its place.
+- ``TIMEOUT`` — the trajectory evaluation exceeded the harness time budget.
+
+Attempt deduplication (M5.1): when the board state (positions, alive flags,
+current shooter) is unchanged from the last recorded attempt of the same
+agent and the agent emits an identical expression, no new attempt is recorded
+— an internal ``repeat_suppressed`` counter is incremented instead.
 
 Definitions
 -----------
-- win rate: matches won / matches played (a draw at the turn cap counts for
-  neither agent).
+- win rate: matches won / matches played (a draw counts for neither agent).
 - hit rate: shots that hit at least one enemy soldier / shots fired.
+  ``PASS_UNREACHABLE`` turns are not shots and do not count against hit rate.
 - kills: distinct enemy soldiers struck (each hit kills, multi-kill allowed).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 from graphwar_sim import config
+
+
+class ShotOutcome(StrEnum):
+    """Outcome taxonomy for one turn (replaces the M2 ``dud`` bucket)."""
+
+    HIT = "HIT"
+    MISS = "MISS"
+    PASS_UNREACHABLE = "PASS_UNREACHABLE"
+    SOLVER_FAILED = "SOLVER_FAILED"
+    PARSE_ERROR = "PARSE_ERROR"
+    TIMEOUT = "TIMEOUT"
 
 
 @dataclass
@@ -25,12 +53,17 @@ class AgentMatchStats:
     """One agent's per-match counters (built by the runner's turn loop)."""
 
     agent: str
-    shots: int = 0
+    shots: int = 0  # fired attempts (HIT + MISS + SOLVER_FAILED + PARSE_ERROR + TIMEOUT)
     enemy_hit_shots: int = 0  # shots that hit >= 1 enemy
     kills: int = 0  # enemy soldiers struck (distinct, each dies)
     friendly_fire_shots: int = 0
     parse_failures: int = 0  # emissions that failed to parse (logged, M3)
     retries: int = 0  # re-samples after a parse failure (logged, M3)
+    # M5.1 taxonomy counters (turn outcomes / suppression, not attempts).
+    pass_unreachable: int = 0  # corridor-proven unreachable turns
+    solver_failed: int = 0  # reachable but the ladder could not convert it
+    timeouts: int = 0  # trajectory evaluation exceeded the time budget
+    repeat_suppressed: int = 0  # duplicate attempts not recorded (M5.1 dedupe)
 
 
 @dataclass
@@ -46,6 +79,10 @@ class AgentLeaderRow:
     friendly_fire_shots: int = 0
     parse_failures: int = 0
     retries: int = 0
+    pass_unreachable: int = 0
+    solver_failed: int = 0
+    timeouts: int = 0
+    repeat_suppressed: int = 0
 
     @property
     def win_rate(self) -> float:
@@ -54,7 +91,10 @@ class AgentLeaderRow:
 
     @property
     def hit_rate(self) -> float:
-        """Enemy-hit shots / shots fired; 0.0 for an agent that never fired."""
+        """Enemy-hit shots / shots fired; 0.0 for an agent that never fired.
+
+        ``PASS_UNREACHABLE`` turns are not shots and do not count here (M5.1).
+        """
         return self.enemy_hit_shots / self.shots if self.shots else 0.0
 
     def merge(self, other: AgentMatchStats) -> None:
@@ -66,9 +106,13 @@ class AgentLeaderRow:
         self.friendly_fire_shots += other.friendly_fire_shots
         self.parse_failures += other.parse_failures
         self.retries += other.retries
+        self.pass_unreachable += other.pass_unreachable
+        self.solver_failed += other.solver_failed
+        self.timeouts += other.timeouts
+        self.repeat_suppressed += other.repeat_suppressed
 
     def as_row(self) -> tuple[str, ...]:
-        """Markdown-ready table row (win rate + hit rate + raw counters)."""
+        """Markdown-ready table row (rates + raw counters + M5.1 taxonomy)."""
         return (
             self.agent,
             str(self.matches),
@@ -78,7 +122,11 @@ class AgentLeaderRow:
             f"{self.hit_rate:.3f}",
             str(self.kills),
             str(self.friendly_fire_shots),
+            str(self.pass_unreachable),
+            str(self.solver_failed),
             str(self.parse_failures),
+            str(self.timeouts),
+            str(self.repeat_suppressed),
             str(self.retries),
         )
 
@@ -92,4 +140,4 @@ def team_label(team_id: int | None) -> str:
     return "draw"
 
 
-__all__ = ["AgentLeaderRow", "AgentMatchStats", "team_label"]
+__all__ = ["AgentLeaderRow", "AgentMatchStats", "ShotOutcome", "team_label"]

@@ -16,6 +16,7 @@ per-match plot via :func:`graphwar_sim.render.render_match`.
 from __future__ import annotations
 
 import json
+import time
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
@@ -36,8 +37,9 @@ from graphwar_sim import TEAM1, TEAM2, Game, render
 from graphwar_sim import config as sim_config
 from graphwar_sim.parser import MalformedFunction
 from graphwar_sim.physics import ShotResult
+from graphwar_sim.solver import RUNG_PASS_UNREACHABLE, RUNG_SOLVER_FAILED
 
-from .metrics import AgentLeaderRow, AgentMatchStats, team_label
+from .metrics import AgentLeaderRow, AgentMatchStats, ShotOutcome, team_label
 
 # The M3 roster. Agent factories are seeded per match so RandomAgent (the only
 # nondeterministic baseline) is reproducible from the seed file.
@@ -70,6 +72,16 @@ class PlannedMatch:
     b: str
 
 
+# Stalemate rule (M5.1): this many consecutive PASS_UNREACHABLE turns from
+# BOTH teams ends the match as a genuine draw (DRAW_STALEMATE), distinct from
+# the turn-cap draw. # TUNABLE.
+_STALL_LIMIT: int = 4
+# Time budget for one trajectory evaluation (parse + integrate). Exceeding it
+# classifies the turn TIMEOUT. # TUNABLE — the reference game's TURN_TIME is
+# 60s per turn (Constants.java:46); headless agents should be far faster.
+_SHOT_TIME_BUDGET: float = 2.0
+
+
 @dataclass
 class ShotRecord:
     """One fired shot, recorded for the match log and per-match plot."""
@@ -79,6 +91,8 @@ class ShotRecord:
     expression: str
     parse_failure: bool
     result: ShotResult = field(default_factory=ShotResult)
+    outcome: str = ShotOutcome.MISS.value
+    solver_rung: str | None = None
 
 
 @dataclass
@@ -94,6 +108,8 @@ class MatchResult:
     shots: list[ShotRecord] = field(default_factory=list)
     rung_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     plot_file: str = ""
+    # M5.1: None (decisive) | "TURN_CAP" | "STALEMATE".
+    draw_reason: str | None = None
 
 
 @dataclass
@@ -133,6 +149,28 @@ def build_plan(
 # --- One match ---------------------------------------------------------------
 
 
+def _state_hash(game: Game) -> tuple[object, ...]:
+    """M5.1 dedupe key: the board state that determines a shot's outcome.
+
+    Positions + alive flags of every soldier, plus the current shooter
+    identity (team + soldier). The global turn index is intentionally NOT
+    included: a recurring (shooter, board) with an identical expression is a
+    repeat attempt even though the turn counter advanced.
+    """
+    team = game.state.current_team()
+    shooter = team.current_soldier()
+    shooter_j = game.state.teams.index(team)
+    shooter_k = team.soldiers.index(shooter)
+    soldiers: list[tuple[int, int, bool, float, float]] = []
+    for j, t in enumerate(game.state.teams):
+        for k, s in enumerate(t.soldiers):
+            # Identity by position: the lazy ``player_index``/``soldier_index``
+            # fields are only assigned inside fire() (all_soldiers), so they
+            # would make turn-0 and later hashes differ spuriously.
+            soldiers.append((j, k, s.alive, s.x, s.y))
+    return (team.team, shooter_j, shooter_k, tuple(soldiers))
+
+
 def play_match(
     seed: int,
     agent_a: Agent,
@@ -145,6 +183,11 @@ def play_match(
     touched (RandomAgent is seeded by the caller, typically
     :func:`_make_agents` with the match seed). Returns the result without
     writing any artifact.
+
+    M5.1: every turn is classified into the :class:`ShotOutcome` taxonomy;
+    duplicate attempts (unchanged board state + identical expression) are
+    suppressed into ``repeat_suppressed``; and consecutive PASS_UNREACHABLE
+    turns from both teams end the match as ``DRAW_STALEMATE``.
     """
     game = Game.create(seed, num_teams=2, num_soldiers=cfg.num_soldiers)
     agents_by_team = {TEAM1: agent_a, TEAM2: agent_b}
@@ -154,13 +197,26 @@ def play_match(
     }
     shots: list[ShotRecord] = []
     turns = 0
+    draw_reason: str | None = None
+    last_key: dict[str, tuple[object, ...]] = {}
+    pass_run = 0
+    pass_teams: set[int] = set()
 
     while not game.finished() and turns < cfg.max_turns:
         team = game.state.current_team()
         agent = agents_by_team[team.team]
+        state_hash = _state_hash(game)
         obs = observe(game)
         expr = agent.act(game, obs)
         match_stats = stats[agent.name]
+        solver_rung = _peek_solver_rung(agent)
+
+        # M5.1 dedupe: unchanged board state + identical expression.
+        key = (state_hash, expr)
+        suppressed = last_key.get(agent.name) == key
+        last_key[agent.name] = key
+
+        t0 = time.perf_counter()
         try:
             result = game.fire(expr)
             parse_failure = False
@@ -170,24 +226,58 @@ def play_match(
             match_stats.parse_failures += 1
             result = game.fire("0*x")
             parse_failure = True
+        elapsed = time.perf_counter() - t0
+
         enemy_hits, teammate_hits = hit_team_counts(game, result)
-        match_stats.shots += 1
-        if enemy_hits:
-            match_stats.enemy_hit_shots += 1
-        match_stats.kills += enemy_hits
-        if teammate_hits:
-            match_stats.friendly_fire_shots += 1
-        shots.append(
-            ShotRecord(
-                agent=agent.name,
-                team_id=team.team,
-                expression=expr,
-                parse_failure=parse_failure,
-                result=result,
+        outcome = _classify(solver_rung, parse_failure, enemy_hits, elapsed)
+
+        # M5.1 stall rule: N consecutive PASS_UNREACHABLE from BOTH teams is a
+        # genuine stalemate draw, distinct from the turn cap.
+        if outcome is ShotOutcome.PASS_UNREACHABLE:
+            pass_run += 1
+            pass_teams.add(team.team)
+        else:
+            pass_run = 0
+            pass_teams.clear()
+
+        if suppressed:
+            match_stats.repeat_suppressed += 1
+        else:
+            match_stats.shots += 1
+            if enemy_hits:
+                match_stats.enemy_hit_shots += 1
+            match_stats.kills += enemy_hits
+            if teammate_hits:
+                match_stats.friendly_fire_shots += 1
+            shots.append(
+                ShotRecord(
+                    agent=agent.name,
+                    team_id=team.team,
+                    expression=expr,
+                    parse_failure=parse_failure,
+                    result=result,
+                    outcome=outcome.value,
+                    solver_rung=solver_rung,
+                )
             )
-        )
+        # Outcome counters count every classified turn (they are outcomes,
+        # not attempts; the dedupe rule only suppresses attempt recording).
+        if outcome is ShotOutcome.PASS_UNREACHABLE:
+            match_stats.pass_unreachable += 1
+        elif outcome is ShotOutcome.SOLVER_FAILED:
+            match_stats.solver_failed += 1
+        elif outcome is ShotOutcome.TIMEOUT:
+            match_stats.timeouts += 1
         game.state.advance_turn()
         turns += 1
+        if pass_run >= _STALL_LIMIT and len(pass_teams) == 2:
+            draw_reason = "STALEMATE"
+            break
+
+    if draw_reason is None and game.finished():
+        draw_reason = None  # decisive
+    elif draw_reason is None:
+        draw_reason = "TURN_CAP"
 
     # Merge the agents' internal counters (M3 logging: parse failures / retries
     # the agent itself saw during emission, e.g. RandomAgent's validation loop).
@@ -211,7 +301,34 @@ def play_match(
         stats=stats,
         shots=shots,
         rung_counts=rung_counts,
+        draw_reason=draw_reason,
     )
+
+
+def _peek_solver_rung(agent: Agent) -> str | None:
+    """The degradation rung of the just-emitted shot, if the agent records one."""
+    history = getattr(agent, "rung_history", None)
+    if isinstance(history, list) and history:
+        return str(history[-1])
+    return None
+
+
+def _classify(
+    solver_rung: str | None,
+    parse_failure: bool,
+    enemy_hits: int,
+    elapsed: float,
+) -> ShotOutcome:
+    """M5.1 outcome taxonomy for one turn (see eval/metrics.py)."""
+    if parse_failure:
+        return ShotOutcome.PARSE_ERROR
+    if elapsed > _SHOT_TIME_BUDGET:
+        return ShotOutcome.TIMEOUT
+    if solver_rung == RUNG_PASS_UNREACHABLE:
+        return ShotOutcome.PASS_UNREACHABLE
+    if solver_rung == RUNG_SOLVER_FAILED:
+        return ShotOutcome.SOLVER_FAILED
+    return ShotOutcome.HIT if enemy_hits else ShotOutcome.MISS
 
 
 def _make_agents(name_a: str, name_b: str, seed: int) -> tuple[Agent, Agent]:
@@ -409,9 +526,11 @@ def _render_markdown(
         f"- seeds file: `{seed_file.name}` — rerun via `python3 -m eval --from-seeds <file>`"
     )
     lines.append(
-        "- metrics reported: win rate + hit rate only (see IMPLEMENTATION_PLAN.md "
-        "Phase 4 minimal slice); counters below are the raw inputs to those rates "
-        "plus the M3 parse-failure logging."
+        "- metrics (M5.1 taxonomy): win rate + hit rate, with every turn classified "
+        "HIT | MISS | PASS_UNREACHABLE | SOLVER_FAILED | PARSE_ERROR | TIMEOUT. "
+        "PASS_UNREACHABLE turns are passes, not shots, and never count against hit "
+        "rate. Draws are `TURN_CAP` or `STALEMATE` (consecutive PASS_UNREACHABLE "
+        "from both teams). Duplicate attempts are suppressed into `Repeats`."
     )
     lines.append("")
 
@@ -419,11 +538,17 @@ def _render_markdown(
     lines.append("")
     lines.append(
         "| Agent | Matches | Wins | Win rate | Shots | Hit rate | Kills | "
-        "Friendly fire | Parse failures | Retries |"
+        "Friendly fire | Passes | SolverFail | Parse | Timeout | Repeats | Retries |"
     )
-    lines.append("|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for row in rows:
         lines.append("| " + " | ".join(row.as_row()) + " |")
+    lines.append("")
+
+    draws_matches = [m for m in matches if m.winner is None]
+    cap_draws = sum(1 for m in draws_matches if m.draw_reason == "TURN_CAP")
+    stall_draws = sum(1 for m in draws_matches if m.draw_reason == "STALEMATE")
+    lines.append(f"- draws: {len(draws_matches)} ({cap_draws} turn-cap, {stall_draws} stalemate)")
     lines.append("")
 
     lines.append("## Head-to-head")
@@ -467,7 +592,7 @@ def _render_markdown(
         t1_stats = m.stats.get(m.agent_a)
         t2_stats = m.stats.get(m.agent_b)
         lines.append(
-            f"| {i} | {m.seed} | {m.agent_a} | {m.agent_b} | {team_label(m.winner)} | "
+            f"| {i} | {m.seed} | {m.agent_a} | {m.agent_b} | {_match_label(m)} | "
             f"{m.turns} | {t1_stats.shots if t1_stats else 0} | "
             f"{t1_stats.enemy_hit_shots if t1_stats else 0} | "
             f"{t2_stats.shots if t2_stats else 0} | "
@@ -476,6 +601,15 @@ def _render_markdown(
         )
     lines.append("")
     return "\n".join(lines)
+
+
+def _match_label(m: MatchResult) -> str:
+    """Winner cell: team name, or the specific draw reason (M5.1)."""
+    if m.winner is not None:
+        return team_label(m.winner)
+    if m.draw_reason == "STALEMATE":
+        return "draw (stalemate)"
+    return "draw (turn cap)"
 
 
 def _solver_rung_summary(

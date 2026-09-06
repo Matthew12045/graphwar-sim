@@ -232,13 +232,17 @@ def _is_implicit(type1: int, type2: int) -> bool:
         config.VARIABLE3,
         config.RIGHT_BRACKET,
     )
-    right = type2 in (
-        config.VALUE,
-        config.VARIABLE1,
-        config.VARIABLE2,
-        config.VARIABLE3,
-        config.LEFT_BRACKET,
-    ) or config.get_num_param(type2) == 1
+    right = (
+        type2
+        in (
+            config.VALUE,
+            config.VARIABLE1,
+            config.VARIABLE2,
+            config.VARIABLE3,
+            config.LEFT_BRACKET,
+        )
+        or config.get_num_param(type2) == 1
+    )
     return left and right
 
 
@@ -284,9 +288,7 @@ def _precedes(t0: int, t1: int) -> bool:
     return t0 < t1
 
 
-def _reorder_rec(
-    polish: list[_Token], tokens: Sequence[_Token], start: int, end: int
-) -> bool:
+def _reorder_rec(polish: list[_Token], tokens: Sequence[_Token], start: int, end: int) -> bool:
     """``reorderRec`` (PolishNotationFunction.java:78-149).
 
     Recursively pull out the lowest-nest operator (tie-broken by ``precedes``)

@@ -1,0 +1,557 @@
+================================================================================
+GRAPH_WAR — DIRECTORY TREE AND FILE DETAILS
+================================================================================
+Project root: /Users/matthurindo/graph_war
+Project: "Graphwar" — a headless, clean-room Python reimplementation of the
+GPL-licensed Java artillery game Graphwar (NORMAL_FUNC mode), plus a
+deterministic solver, LLM-agent seam, and a seeded eval harness.
+Generated: 2026-07-09
+
+--------------------------------------------------------------------------------
+1. DIRECTORY TREE
+--------------------------------------------------------------------------------
+(Excludes VCS/cache internals: .git/, .mypy_cache/, .pytest_cache/,
+ .ruff_cache/, __pycache__/. The ref/ tree is shown in full for source files;
+ its many .png image assets are summarized.)
+
+graph_war/
+├── .gitignore
+├── 3._Give_it_a_simulate_tool.py
+├── 5.2.md
+├── IMPLEMENTATION_PLAN.md
+├── Implementation.py
+├── README.md
+├── Shared_core_prepend_to_every_bot_.txt
+├── Shared_core_prepend_to_every_bot_-2.txt
+├── Shared_core_prepend_to_every_bot_-3.txt
+├── Shared_core_prepend_to_every_bot_-4.txt
+├── Shared_core_prepend_to_every_bot_-5.txt
+├── Shared_core_prepend_to_every_bot_-6.txt
+├── The_Master_Magician.txt
+├── file.txt
+├── graph_war.md
+├── pyproject.toml
+│
+├── graphwar_sim/                        # M1: headless simulator (core package)
+│   ├── __init__.py
+│   ├── config.py
+│   ├── parser.py
+│   ├── physics.py
+│   ├── render.py
+│   ├── solver.py                        # M2: deterministic no-LLM solver
+│   └── state.py
+│
+├── agents/                              # M3: agent protocol + agents
+│   ├── __init__.py
+│   ├── base.py
+│   ├── baselines.py
+│   ├── emission.py
+│   ├── observation.py
+│   ├── simulate_tool.py
+│   └── solver_agent.py
+│
+├── eval/                                # M4: seeded match runner + leaderboard
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── metrics.py
+│   ├── runner.py
+│   └── results/
+│       ├── leaderboard.md
+│       ├── seeds.json
+│       └── plots/                       # 30 per-match PNG plots
+│           ├── match_000_seed1000.png
+│           ├── match_001_seed1001.png
+│           ├── ... (match_002 … match_029, seeds 1002–1009, 2000–2009, 3000–3009)
+│           └── match_029_seed3009.png
+│
+├── tests/
+│   ├── golden/
+│   │   ├── data/
+│   │   │   └── golden.json              # captured Java reference shot results
+│   │   └── test_golden.py
+│   ├── test_agents.py
+│   ├── test_eval.py
+│   ├── test_parser.py
+│   └── test_solver.py
+│
+├── tools/
+│   ├── golden/
+│   │   ├── Graphwar/
+│   │   │   └── GoldenShot.java          # in-reference Java harness (test-only)
+│   │   └── generate_golden.py
+│   └── jar_probe/
+│       ├── ProbeTerrain.java
+│       └── out/
+│           └── Graphwar/
+│               └── ProbeTerrain.class   # compiled probe output
+│
+├── docs/
+│   ├── GROUND_TRUTH.md                  # M0: authoritative spec w/ file:line cites
+│   └── OPEN_QUESTIONS.md                # recorded divergences & assumptions
+│
+└── ref/graphwar/                        # GPL Java reference (separate git repo,
+                                         # excluded from this repo's VCS via .gitignore)
+    ├── .gitignore
+    ├── COPYING                          # GPLv3
+    ├── Dockerfile
+    ├── compile.sh
+    ├── makefile
+    ├── readme.md
+    ├── bin/                             # compiled .class files
+    │   ├── GraphServer/                 #   ClientConnection, Connection, Constants,
+    │   │                                #   GraphServer(+inner), NetworkProtocol, Player
+    │   └── Graphwar/                    #   ~50 classes: Graphwar, GameData, GameScreen,
+    │                                    #   Function, PolishNotationFunction, FunctionToken,
+    │                                    #   GoldenOracle, GoldenShot, Obstacle, Soldier,
+    │                                    #   ComputerPlayer, screens, UI widgets, etc.
+    ├── rsc/                             # game assets
+    │   ├── *.png                        # ~100 UI images (buttons, masks, shadows,
+    │   │                                #   soldiers, teams, arrows, explosions, etc.)
+    │   ├── *.txt                        # UI text layouts (MainMenu, PreGame, GameScreen,
+    │   │                                #   GlobalRoom, soldier, explosion, etc.)
+    │   ├── monkey.au                    # audio
+    │   ├── explosions/                  # blank.png, explosion0–5.png
+    │   └── soldiers/                    # soldier1–9, currentPlayer0–2, helmet,
+    │                                    #   nextTeam, explosions, menus, etc.
+    └── src/
+        ├── GlobalServer/                # GlobalServer.java, LobbyPlayer.java, Room.java
+        ├── GraphServer/                 # ClientConnection, Connection, Constants,
+        │                                #   GraphServer, NetworkProtocol, Player (.java)
+        ├── Graphwar/                    # 29 .java files: Graphwar (main), GameData,
+        │                                #   GameScreen, Function, PolishNotationFunction,
+        │                                #   FunctionToken, GoldenOracle, Obstacle, Soldier,
+        │                                #   ComputerPlayer, GlobalClient, GlobalScreen,
+        │                                #   MainMenuScreen, PreGameScreen, Player,
+        │                                #   PlayerBoard, Room, RoomBoard, ServerConnection,
+        │                                #   GraphUI/GraphButton/GraphTextBox/GraphTimer/
+        │                                #   GraphPlane/GraphAngleDisplay/GraphUtil,
+        │                                #   MalformedFunction, ProbeEdge, StartStopPanel,
+        │                                #   ValueToken
+        └── RoomServer/                  # GlobalClient, RemoteGraphServer, Room, RoomServer
+
+
+--------------------------------------------------------------------------------
+2. FILE DETAILS — PROJECT ROOT
+--------------------------------------------------------------------------------
+
+.gitignore  (20 lines)
+    Ignores Python caches (__pycache__, *.pyc, .venv, .pytest_cache, .ruff_cache,
+    .mypy_cache), the GPL Java reference (/ref/ — cited, never copied into VCS),
+    compiled Java output (*.class, tools/jar_probe/out/), and OS/editor files.
+
+README.md  (140 lines)
+    Project overview. States scope: headless faithful reimplementation of
+    Graphwar NORMAL_FUNC mode; milestones M0–M4 all done (ground truth, simulator
+    + golden tests, deterministic solver at 33/40 hit rate, agents, eval harness).
+    Documents the clean-room / legal position (reference is GPLv3 in ref/, cited
+    by file:line, not copied; Python side is MIT), the directory layout, how to
+    run the eval (python3 -m eval --root 1000 --matches 5 / --from-seeds),
+    install (pip install -e ".[dev]", Python 3.11+, numpy/scipy/matplotlib),
+    how to run the golden tests (JVM capture step + pure-Python parity step),
+    and the security note that the parser must never reach eval/exec/sympify.
+
+IMPLEMENTATION_PLAN.md  (262 lines)
+    The master plan: sequences five phases (0 ground truth → 1 simulator →
+    2 solver → 3 agents → 4 eval). Records three source-confirmed corrections to
+    earlier assumptions: (1) the frame is a centered world frame with an
+    automatic vertical offset, not shooter-relative; (2) firing angle has no
+    effect in plain function mode; (3) hit radius is SOLDIER_RADIUS=7 and the
+    trajectory continues past a hit (multi-kill possible). Lists real constants,
+    the parser grammar facts, adaptive step-halving integration, and per-phase
+    acceptance criteria.
+
+graph_war.md  (131 lines)
+    The original project spec: build a Python project where (a) a deterministic
+    optimizer and (b) LLM agents play Graphwar. Phase 0 demands ground truth
+    from the Java source with file:line citations; Phase 1 specifies the
+    graphwar_sim/ modules (parser, physics, state, render); later phases cover
+    solver, agents, and eval. Also lists prior art (Graphwar-Bot,
+    graphwar-generator, GraphingSolver).
+
+5.2.md  (173 lines)
+    Standalone milestone spec "M5.2 — CCF: Certified Corridor Fit": a new solver
+    rung where feasibility and curve-fitting are the same computation (an LP with
+    a curvature bound M = sigma^-2 * ||w||_1 that is linear in the decision
+    variables, so clearance is certified as a by-product). Specifies the Gaussian
+    + affine basis, the curvature-bound derivation, cell-wise corridor
+    construction, and test requirements. Depends on M5.1.
+
+Implementation.py  (49 lines)
+    Early solver sketch (superseded by graphwar_sim/solver.py): a numpy/cvxpy
+    one-shot optimizer — angle scan, rotated Dijkstra corridor guide, Gaussian
+    basis fit with OSQP, blast/friendly-fire constraints, step-halving
+    certification, and a degrade() fallback. Per the plan, the angle scan is
+    dead code for function mode.
+
+3._Give_it_a_simulate_tool.py  (21 lines)
+    Sketch of the "simulate" tool for LLM agents: sympify a candidate expression
+    and integrate it (dt=0.05) until domain error, divergence, collision, or
+    out-of-range. Superseded by agents/simulate_tool.py, which uses the faithful
+    ported parser/integrator instead of sympy (banned in the hot path).
+
+pyproject.toml  (57 lines)
+    Package metadata: graphwar-sim 0.1.0, MIT, Python >=3.11, deps
+    numpy/scipy/matplotlib, dev extras pytest/ruff/mypy. Packages:
+    graphwar_sim*, agents*, eval*. Tool config: pytest (testpaths=tests, -q),
+    ruff (line-length 100, py311, E/W/F/I/UP/B/SIM), mypy strict.
+
+file.txt  (7 lines)
+    A single LLM style prompt: "STYLE: Gremlin" — chaotic, hard-to-read
+    function families (sigmoids, abs() kinks, sqrt sweeps, sin(x^2) chirps),
+    but must still simulate and verify a real hit; never reuse a function
+    family two turns in a row.
+
+Shared_core_prepend_to_every_bot_.txt  (19 lines)
+    The shared core prompt prepended to every LLM bot: shot-generator role,
+    frame description (note: written in the pre-correction shooter-relative
+    frame), hard rules (f(0) near 0, continuity, blast radius, no friendly
+    fire, terrain clearance), Graphwar syntax whitelist, the simulate(expr)
+    tool contract, and "emit ONLY the bare expression" output rule.
+
+Shared_core_prepend_to_every_bot_-2.txt  (10 lines)
+    Style prompt "Sniper": simplest curve that works — start with the straight
+    line f(x)=(h/d)*x to the nearest enemy; escalation ladder, never skip a rung.
+
+Shared_core_prepend_to_every_bot_-3.txt  (7 lines)
+    Style prompt "Howitzer": go over everything — default high parabola
+    f(x) = -a*x*(x-L) with peak clearing max corridor terrain by 8+ units.
+
+Shared_core_prepend_to_every_bot_-4.txt  (8 lines)
+    Style prompt "Serpent": narrow corridors — damped oscillator
+    f(x) = A*sin(w*x)*e^(-c*x), zero crossings aimed at tight gaps.
+
+Shared_core_prepend_to_every_bot_-5.txt  (7 lines)
+    Style prompt "Bodyguard": defensive — compute a FORBIDDEN BAND per teammate
+    (|f(d_k) - h_k| > BLAST_RADIUS + 3) and route around them before aiming.
+
+Shared_core_prepend_to_every_bot_-6.txt  (9 lines)
+    Style prompt "Professor": solve algebraically first — write the full
+    constraint system (f(0)=0, hit constraints, teammate exclusion, corridor
+    bounds) before simulating.
+
+The_Master_Magician.txt  (61 lines)
+    Style prompt "The Master Magician": one curve through EVERY living enemy.
+    Four methods: (1) lineup/sort by dx, (2) the Comb — one Gaussian per enemy
+    with b = 9/s_min^2, (3) the Lagrange interpolant when the baseline is
+    blocked (with Runge warning), (4) the Staircase — sigmoid ladders for
+    monotone height profiles.
+
+
+--------------------------------------------------------------------------------
+3. FILE DETAILS — graphwar_sim/  (M1 simulator + M2 solver)
+--------------------------------------------------------------------------------
+
+graphwar_sim/__init__.py  (52 lines)
+    Package public surface: re-exports config constants (PLANE_LENGTH, etc.),
+    parser (PolishNotationFunction, MalformedFunction), physics (Soldier,
+    Obstacle, ShotResult, process_function_range), state (Game, GameState,
+    Team), and the solver (solve, SolverResult).
+
+graphwar_sim/config.py  (141 lines)
+    All numeric constants, each cited to the Java source (Constants.java,
+    FunctionToken.java). Plane geometry (770x450, PLANE_GAME_LENGTH=50),
+    terrain circle distributions (mean radius 40 sd 25; mean count 15 sd 7),
+    soldier radius 7 / selection 15 / min Chebyshev spacing 20, explosion
+    radius 12, integration (FUNC_MAX_STEPS=20000, max step dist^2=0.001,
+    min x step 1e-5, STEP_SIZE=0.01), angle iteration (pi/360, 100 loops),
+    teams/modes (TEAM1/2, NORMAL_FUNC/FST_ODE/SND_ODE), match shape (max 10
+    players, 4 soldiers each, 2 initial, 60s turns), and the 18 token-type
+    codes with precedence. Helpers: is_operation(), get_num_param().
+
+graphwar_sim/parser.py  (433 lines)
+    Faithful port of Graphwar.PolishNotationFunction — the expression
+    tokenizer + prefix (Polish) reordering + recursive-descent evaluator.
+    Security surface: no eval/exec/sympify; LLM strings never reach Python
+    code-evaluation. Replicates Java Math IEEE-754 edge cases (_java_div,
+    _java_sqrt, _java_log, _java_log10, _java_pow, _java_sin/cos/tan) so
+    NaN/Inf propagate like the JVM. MalformedFunction is a message-free
+    exception, matching the reference. Handles implicit multiplication,
+    -→+- rewrite, e/pi constants, and the full operator whitelist.
+
+graphwar_sim/physics.py  (275 lines)
+    The heart of the simulator: port of Function.processFunctionRange
+    (Function.java:173-309). Integrates y=f(x) with adaptive step-halving,
+    applies the TEAM2 mirror, the muzzle offset, and the auto vertical offset
+    (offSet = -f(x0)+y0). Hit test: strict dist^2 < SOLDIER_RADIUS^2 in
+    plane coords; trajectory continues past hits (multi-kill); only the
+    shooter's current-turn soldier is skipped. Dataclasses: Soldier, Obstacle
+    (collide_point grid), ShotResult (points, hits, last_x/last_y, num_steps).
+    Reproduces the source quirk that the inverse transform uses PLANE_LENGTH
+    for both axes.
+
+graphwar_sim/state.py  (362 lines)
+    Match layer: Team (player + soldiers + current-turn soldier cycling per
+    Player.nextTurn), GameState (turn advancement per GameData.nextTurnMessage,
+    win rule per checkGameFinished — game ends when a side has no living
+    soldier), Game (create(seed) deterministic map, fire() applies kills per
+    GameData.processFunction, play_turn(), winner()). make_circle_obstacle
+    builds a crisp-circle terrain grid (OOB collides). generate_map: seeded
+    terrain circles (reference distributions) + soldier placement (TUNABLE
+    stand-in: side thirds, off-terrain, 5-point clearance, Chebyshev spacing).
+
+graphwar_sim/solver.py  (513 lines)
+    M2 deterministic no-LLM solver. solve(game) -> SolverResult with a legal,
+    self-verified y=f(x) expression (verified through the real integrator;
+    never hits a teammate). Works in a shooter-facing world frame (TEAM2 mirror
+    folded in). Primary basis: sum of Gaussians, linear in weights, least
+    squares; piecewise-linear integration gap certified via |f''| bound
+    M = 2b * sum|w_j|. Degradation ladder (rung recorded):
+    per_target_gaussian → parabola/line → fixed_grid_gaussian → arc (terrain-
+    aware quadratic sweep) → dud. Emission via _num (plain decimals only —
+    scientific notation would be corrupted by the parser's -→+- rewrite).
+    run_battery() runs the seeded-map battery and reports hit rate + rung mix.
+
+graphwar_sim/render.py  (219 lines)
+    Headless matplotlib (Agg backend) rendering in plane/pixel space:
+    obstacle_to_image (rasterize terrain to a bool grid — the same grid
+    GoldenShot dumps for parity), render_state (terrain + team-colored
+    soldiers + optional shot trajectory), render_match (final board + all
+    shot trajectories, used by the eval harness for per-match plots).
+
+
+--------------------------------------------------------------------------------
+4. FILE DETAILS — agents/  (M3)
+--------------------------------------------------------------------------------
+
+agents/__init__.py  (46 lines)
+    Public surface for M3: Observation, AgentStats, Agent protocol,
+    observe(), simulate()/SimResult, SolverAgent, RandomAgent,
+    StraightShotAgent, format_literal, hit_team_counts, world/plane transforms.
+
+agents/base.py  (169 lines)
+    The agent seam. Agent protocol: act(game, obs) -> expression string in the
+    centered world frame; stats() -> AgentStats (parse_failures, retries).
+    Observation dataclass: frame label, turn index, team id, shooter/ally/
+    enemy positions in world coords (TEAM2 mirrored so shooter always faces
+    right), coarse terrain blocks, and an ASCII board (M/S/E/#).
+    hit_team_counts classifies hits as enemy vs teammate. world_coords /
+    plane_from_world are the single source of truth for the plane<->world
+    transforms (round-trip tested).
+
+agents/observation.py  (128 lines)
+    observe(game) -> Observation: builds the centered-world-frame board for the
+    current turn (mirror for TEAM2), sorts enemies nearest-first, samples
+    terrain on a coarse 15px grid into world-space blocked cells, and renders
+    the 70x32 ASCII board (x in [-25,25], y in [-15,15]).
+
+agents/simulate_tool.py  (70 lines)
+    The pure physics oracle: simulate(game, expr) -> SimResult (parseable,
+    hit_enemy, hit_teammate, num_hits, num_steps, error). Fires the candidate
+    through the real parser + process_function_range WITHOUT applying kills,
+    so an agent can probe before committing. No eval/exec/sympify.
+
+agents/baselines.py  (117 lines)
+    StraightShotAgent: aims a straight line (m*x) at the nearest enemy in the
+    world frame (usually dies at terrain — that's the point of a baseline).
+    RandomAgent: seeded sampler over a small closed grammar (line / quadratic /
+    sine / Gaussian), validating each emission through the real parser with a
+    10-retry budget before falling back to the safe dud "0*x".
+
+agents/solver_agent.py  (37 lines)
+    SolverAgent: stateless wrapper around the M2 solver — each turn re-runs
+    solve(game) and emits result.expression verbatim; records rung_history
+    (degradation rung per shot) as a Phase-4 informational metric.
+
+agents/emission.py  (19 lines)
+    Re-exports graphwar_sim.solver._num as format_literal: the canonical
+    plain-decimal number formatter shared by all agents (exponents would be
+    corrupted by the parser's -→+- rewrite).
+
+
+--------------------------------------------------------------------------------
+5. FILE DETAILS — eval/  (M4)
+--------------------------------------------------------------------------------
+
+eval/__init__.py  (41 lines)
+    Public surface: MatchConfig, MatchResult, ShotRecord, build_plan,
+    play_match, run_leaderboard, run_from_seed_file, AgentMatchStats,
+    AgentLeaderRow.
+
+eval/runner.py  (503 lines)
+    Seeded match runner + leaderboard builder. Pure function of its inputs:
+    round-robin plan (every unordered pair x n matches x both sides, derived
+    seeds root + p*1000 + m*2 + s), fresh Game + fresh seeded agents per match.
+    play_match: turn loop (observe → agent.act → game.fire, MalformedFunction
+    replaced by safe dud + logged), per-shot ShotRecord, win/draw at turn cap.
+    run_leaderboard persists seeds.json then plays everything;
+    run_from_seed_file reproduces the leaderboard byte-for-byte from the seed
+    file alone. Writes per-match plots (replayed final board + all trajectories)
+    and leaderboard.md (win rate, hit rate, head-to-head, solver rung summary,
+    per-match log).
+
+eval/metrics.py  (95 lines)
+    AgentMatchStats (per-match counters: shots, enemy_hit_shots, kills,
+    friendly_fire_shots, parse_failures, retries) and AgentLeaderRow (roll-up
+    with win_rate = wins/matches, hit_rate = enemy-hit shots/shots, and
+    as_row() for markdown). team_label() formats winners/draws.
+
+eval/__main__.py  (55 lines)
+    CLI: python3 -m eval --root 1000 --matches 5 --soldiers 2 --turns 100
+    --out eval/results, or --from-seeds <seeds.json> to reproduce.
+
+eval/results/leaderboard.md  (61 lines)
+    Committed leaderboard: root_seed=1000, 30 matches (3 agents, 5/pair x2
+    sides), 2 soldiers, 100-turn cap. Results: solver 14/20 wins (0.700 win
+    rate, 0.078 hit rate, 31 kills, 0 friendly fire), straight 4/20 (0.200,
+    0.032), random 0/20 (0.000, 0.002). Includes head-to-head table, solver
+    rung distribution (dud=297, per_target_gaussian=7, arc=12, line=3,
+    parabola=2, fixed_grid_gaussian=1), and the per-match log with plot links.
+
+eval/results/seeds.json  (163 lines)
+    The exact run plan (root seed, roster, matches/pair, config, and all 30
+    (seed, a, b) match entries) — the single artifact from which the
+    leaderboard is fully reproducible.
+
+eval/results/plots/match_NNN_seedNNNN.png  (30 files)
+    One PNG per match: final board (terrain + surviving soldiers) with every
+    fired trajectory overlaid; title encodes agents, seed, winner, turns.
+
+
+--------------------------------------------------------------------------------
+6. FILE DETAILS — tests/
+--------------------------------------------------------------------------------
+
+tests/golden/test_golden.py  (147 lines)
+    Golden parity suite: replays each scenario from data/golden.json (captured
+    from the compiled Java reference) through the Python simulator and asserts
+    parity on numSteps (exact), lastX/lastY (1e-9 rel / 1e-6 abs), the hit
+    list (exact, in order), and the full trajectory. Also asserts >=20
+    scenarios and required coverage (mirrored shooter, large/negative f(0)
+    offset, steep curves triggering step-halving, multi-soldier hits, terrain
+    grid, dead-soldier skip). Divergence is reported, not tuned away.
+
+tests/golden/data/golden.json
+    Checked-in reference output: for each scenario, the Java reference's
+    numSteps, lastX, lastY, hits, full trajectory, and (for terrain scenarios)
+    the exact collidePoint grid. Lets the golden tests run without a JVM.
+
+tests/test_parser.py  (100 lines)
+    Accept/reject table for the parser (the security surface): ~20 valid
+    expressions with expected values at x=2 (implicit multiplication, sqrt,
+    log/ln, trig, pi/e, parentheses) and malformed inputs that must raise
+    MalformedFunction without crashing or reaching eval/exec.
+
+tests/test_solver.py  (186 lines)
+    M2 acceptance: emission round-trips (parse(to_graphwar(w)) reproduces the
+    intended curve, incl. negative centers/weights and extreme/tiny values),
+    parseable + certified outputs on the seeded battery, hit-rate and
+    degradation-rung logging, no friendly fire, dud fallback never crashes.
+
+tests/test_agents.py  (274 lines)
+    M3 acceptance: the frame round-trip test (handcrafted 1v1 board on empty
+    terrain; hand-computed world coordinates from the documented transform
+    gx = 50(px-385)/770, gy = 50(-py+225)/770, incl. the TEAM2 mirror case),
+    agent contract checks, and full seeded matches per agent with no crashes.
+
+tests/test_eval.py  (199 lines)
+    M4 acceptance: play_match determinism (same seed + agents → identical
+    turns/winner/expressions), plan derivation, leaderboard run, and
+    reproducibility from the seed file alone.
+
+
+--------------------------------------------------------------------------------
+7. FILE DETAILS — tools/
+--------------------------------------------------------------------------------
+
+tools/golden/Graphwar/GoldenShot.java  (174 lines)
+    Test-only Java harness compiled into the reference's bin/: fires one shot
+    through the reference Function.processFunctionRange and prints the result
+    as a single JSON line (numSteps, lastX, lastY, hits, points; plus the
+    exact collidePoint grid when terrain circles are present). Not part of the
+    game.
+
+tools/golden/generate_golden.py  (136 lines)
+    Drives GoldenShot over the scenario list (~20 scenarios: baseline/mirror
+    parabolas, linear, steep/quartic step-halving, offsets, multi-soldier,
+    dead soldier, terrain grids) and writes the captured reference results to
+    tests/golden/data/golden.json. Requires a JVM + the reference build.
+
+tools/jar_probe/ProbeTerrain.java  (17 lines)
+    One-off probe of the compiled reference's Obstacle.collidePoint semantics:
+    white pixels → false, black (circle) pixels → true, out-of-bounds → true.
+    Confirmed the terrain model used by the simulator.
+
+tools/jar_probe/out/Graphwar/ProbeTerrain.class
+    Compiled output of the probe (gitignored).
+
+
+--------------------------------------------------------------------------------
+8. FILE DETAILS — docs/
+--------------------------------------------------------------------------------
+
+docs/GROUND_TRUTH.md  (514 lines)
+    The authoritative M0 spec. Every claim carries a file:line citation into
+    ref/graphwar/src/. Covers: the two coordinate frames (plane/pixel 770x450
+    y-down vs centered world x in [-25,25] y-up, with the PLANE_LENGTH-both-
+    axes quirk), the exact transform equations, firing angle (no effect in
+    function mode), the auto vertical offset, adaptive step-halving
+    integration and termination conditions, the hit test (strict <, plane
+    coords, continues past hits), the parser grammar (tokenizer regex,
+    precedence, -→+- rewrite, Java Math edge cases), turn structure and win
+    rule, and a Corrections section recording where earlier assumptions were
+    wrong.
+
+docs/OPEN_QUESTIONS.md  (247 lines)
+    Tracks unresolved questions and carried-forward assumptions. The three
+    original M0 questions (hit-test coordinate space; soldierCollides 5-point
+    sampling scope; multi-hit/win rule) are all RESOLVED with citations.
+    M2 adds one recorded divergence: the fixed-grid Gaussian rung underperforms
+    the per-target-centre basis on the seeded battery (and was the only rung to
+    produce friendly fire) — reported, not tuned away.
+
+
+--------------------------------------------------------------------------------
+9. FILE DETAILS — ref/graphwar/  (GPL Java reference, cited not copied)
+--------------------------------------------------------------------------------
+
+The original Graphwar client/server (catabriga/graphwar, GPLv3). Kept as a
+separate git repo, excluded from this project's VCS; the Python code cites it
+by file:line as a specification.
+
+Top level:
+  COPYING            GPLv3 license text
+  readme.md          original game readme
+  Dockerfile         container build for the reference
+  makefile           build (javac + jar)
+  compile.sh         compile helper
+  .gitignore         reference repo's own ignore file
+
+src/GraphServer/  (server-side, 6 files)
+  Constants.java     ALL game constants (plane size, circle distributions,
+                     soldier radii, integration params, token codes) — the
+                     primary citation source for graphwar_sim/config.py
+  GraphServer.java   headless game server (soldier placement validation at
+                     line 687, terrain circle generation)
+  ClientConnection.java, Connection.java, NetworkProtocol.java, Player.java
+                     network protocol + player bookkeeping
+
+src/Graphwar/  (client, 29 files)
+  Graphwar.java      main entry point
+  GameData.java      client-side game state: turn advancement (873-892), win
+                     rule (512-545), shot processing (1063-1114)
+  Function.java      THE core shot mechanics: getStartAngle (133-160),
+                     playerAlreadyHit (162-171), processFunctionRange
+                     (173-309) — the primary citation source for physics.py
+  PolishNotationFunction.java   parser: reorderRec (78-149), evaluateRec
+                     (968-1127), isOperation/getNumParam (720-748)
+  FunctionToken.java, ValueToken.java, MalformedFunction.java
+  Obstacle.java      terrain bitmap: circle filling (39-56), collidePoint
+                     (99-103), soldierCollides (123-161)
+  Soldier.java, GameScreen.java, ComputerPlayer.java, Player.java,
+  PlayerBoard.java, Room.java, RoomBoard.java, GlobalClient.java,
+  GlobalScreen.java, GlobalPlayerBoard.java, MainMenuScreen.java,
+  PreGameScreen.java, StartStopPanel.java, ServerConnection.java,
+  GraphUI.java, GraphButton.java, GraphTextBox.java, GraphTimer.java,
+  GraphPlane.java, GraphAngleDisplay.java, GraphUtil.java, ProbeEdge.java,
+  GoldenOracle.java  (in-reference golden-shot oracle used by tools/golden)
+
+src/GlobalServer/ (3 files) and src/RoomServer/ (4 files)
+  Multiplayer lobby/room infrastructure (GlobalServer, LobbyPlayer, Room,
+  RemoteGraphServer, RoomServer, GlobalClient).
+
+bin/  compiled .class mirrors of the above (incl. GoldenShot.class from
+      tools/golden/Graphwar/GoldenShot.java).
+rsc/  game assets: ~100 UI PNGs (buttons, masks, shadows, arrows, soldiers,
+      team markers, timer), UI text layouts (*.txt), monkey.au, explosions/
+      (6 frames), soldiers/ (soldier sprites 1-9, current-player markers,
+      helmet, explosion frames, menus).

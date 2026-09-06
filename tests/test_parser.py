@@ -21,12 +21,12 @@ ACCEPT = [
     ("x+1", 3.0),
     ("x-1", 1.0),
     ("x/2", 1.0),
-    ("2*x", 4.0),            # implicit multiplication (number * variable)
+    ("2*x", 4.0),  # implicit multiplication (number * variable)
     ("x^2+10", 14.0),
     ("sqrt(x)", 1.4142135623730951),
     ("sqrt(abs(x-3))+1", 2.0),
-    ("log(x)", 0.3010299956639812),   # base-10
-    ("ln(x)", 0.6931471805599453),    # natural
+    ("log(x)", 0.3010299956639812),  # base-10
+    ("ln(x)", 0.6931471805599453),  # natural
     ("abs(x-5)", 3.0),
     ("sin(x)", 0.9092974268256817),
     ("cos(x)*2", -0.8322936730942848),

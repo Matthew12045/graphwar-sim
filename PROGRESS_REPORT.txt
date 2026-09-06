@@ -1,0 +1,167 @@
+===============================================================================
+ GRAPHWAR — PYTHON REIMPLEMENTATION
+ PROJECT PROGRESS REPORT
+===============================================================================
+ Repository : /Users/matthurindo/graph_war  (branch: main)
+ Head commit: f102314 "M4 review pass: cut dead/speculative API, tighten frame
+              utilities"  (2026-09-06)
+ Python     : 3.14.6  |  ruff 0.16.6  |  mypy 2.3.1 (strict)
+ Test suite : 97/97 green  |  ruff clean  |  mypy strict clean
+===============================================================================
+
+1. WHAT THE PROJECT IS
+-------------------------------------------------------------------------------
+A clean-room Python reimplementation of the GPL-licensed Java artillery game
+"Graphwar" (NORMAL_FUNC mode). A shot is the graph of a function y = f(x); the
+projectile traces that curve and explodes on the first thing it touches. The
+reference Java source (`ref/graphwar/`, cited by file:line, never copied) is the
+spec; the Python code is MIT-licensed and lives in `graphwar_sim/`, `agents/`,
+and `eval/`.
+
+The plan (IMPLEMENTATION_PLAN.md) sequences five phases M0-M4. M0-M2 were
+complete before this session; M3 (agents, minimal slice) and M4 (eval harness,
+minimal slice) were delivered in this session.
+
+2. MILESTONE STATUS
+-------------------------------------------------------------------------------
+  M0  Ground truth + corrections            DONE  docs/GROUND_TRUTH.md
+  M1  Headless simulator + golden tests     DONE  26 golden scenarios vs Java
+       (byte-for-byte parity on the shot path)
+  M2  Deterministic no-LLM solver           DONE  degradation ladder + cert
+       (seeded battery: 33/40 first-shot hits, 0 friendly fire, 0 parse
+       failures; terrain-aware "arc" rung rescues the terrain duds)
+  M3  Agents — minimal slice                DONE  agents/  (this session)
+  M4  Eval harness — minimal slice          DONE  eval/ + results (this session)
+
+3. COMMIT HISTORY (c93078c = M2 HEAD ... current)
+-------------------------------------------------------------------------------
+  f102314  M4 review pass: cut dead/speculative API, tighten frame utilities
+  3e4dcc7  M4: seeded match runner + win-rate/hit-rate leaderboard, reproducible
+           from the seed file alone
+  3915e87  M3: agents package — SolverAgent, baselines, centered-world
+           observation + frame round-trip tests
+  c93078c  M2: terrain-aware arc rung recovers the terrain duds   [pushed prior]
+  All commits pushed to origin/main.
+
+4. WHAT WAS BUILT IN THIS SESSION
+-------------------------------------------------------------------------------
+M3 — agents/ (~550 lines)
+  agents/base.py           Agent protocol, Observation (centered world frame,
+                           TEAM2-mirrored so the shooter faces right),
+                           AgentStats (parse-failure/retry logging),
+                           hit_team_counts(), world_coords/plane_from_world.
+  agents/observation.py    observe(game): board -> world-frame soldier coords,
+                           coarse terrain blocks, ASCII map (M/S/E/#).
+  agents/simulate_tool.py  simulate(game, expr): fire a candidate through the
+                           real parser+physics WITHOUT applying kills — a pure
+                           oracle (no sympify; the sketch's structure only).
+  agents/emission.py       format_literal: plain-decimal emission (the parser
+                           rewrites "-" to "+-", which corrupts scientific
+                           notation — never emit an exponent).
+  agents/baselines.py      RandomAgent (seeded, closed grammar of valid
+                           expressions, defensive validation loop) and
+                           StraightShotAgent (world-frame secant to nearest
+                           enemy).
+  agents/solver_agent.py   SolverAgent: wraps graphwar_sim.solver.solve,
+                           records the degradation rung of every shot.
+
+M3 acceptance (all verified by tests/test_agents.py):
+  - Every agent plays a full seeded match headless without crashing.
+  - Frame round-trip test green: handcrafted board on empty terrain ->
+    observe() -> StraightShotAgent -> game.fire() -> the physics records the
+    exact enemy the observation placed (TEAM1 and TEAM2/mirror cases). This
+    catches shooter-relative vs centered-world confusion before any LLM work.
+  - Parse-failure / retry counts logged (AgentStats + leaderboard columns).
+  Deliberately NOT built (plan's minimal slice): llm_agent, hybrid_agent,
+  prompts/styles.
+
+M4 — eval/ (~660 lines + results)
+  eval/runner.py      build_plan (round-robin pairs, side-balanced, unique
+                      derived seeds), play_match (fresh Game per seed, fresh
+                      match-seeded agents — pure function of the plan),
+                      run_leaderboard / run_from_seed_file, per-match plots.
+  eval/metrics.py     AgentMatchStats + AgentLeaderRow (win rate, hit rate).
+  eval/__main__.py    CLI: fresh run from a root seed, or --from-seeds to
+                      reproduce a committed leaderboard.
+  graphwar_sim/render.py  render_match(): final board + all trajectories,
+                      hit markers, eliminated-soldier glyphs.
+  eval/results/       committed artifacts: seeds.json (30 matches),
+                      leaderboard.md, plots/ (30 PNGs).
+
+M4 acceptance (all verified by tests/test_eval.py):
+  - leaderboard.md + per-match plots for the full roster.
+  - Reproducible from the seed file alone: re-running
+    `python3 -m eval --from-seeds eval/results/seeds.json` reproduces
+    leaderboard.md byte-for-byte.
+  Metrics: win rate + hit rate only (token cost and ablations deferred).
+
+5. COMMITTED LEADERBOARD  (eval/results/leaderboard.md, root_seed=1000,
+   matches/pair = 5 x 2 sides, num_soldiers=2, max_turns=100, 30 matches)
+-------------------------------------------------------------------------------
+  Agent    Matches  Wins  Win rate  Shots  Hit rate  Kills  FF   ParseF
+  solver      20     14    0.700     322    0.078     31     0     0
+  random      20      0    0.000     466    0.002      1     2     0
+  straight    20      4    0.200     468    0.032     15     0     0
+
+  Head-to-head: solver beats random 7-0 (3 draws), straight 7-0 (3 draws);
+  straight beats random 4-0 (6 draws).
+  Solver degradation rungs across the 30 matches (per-SHOT counts; see §8):
+  dud=297, arc=12, per_target_gaussian=7, line=3, parabola=2, fixed_grid=1.
+
+  Notes: matches reach the 100-turn cap as draws on maps where no monotone-x
+  path exists (the genuine terrain-occlusion limit the M2 arc rung works
+  around); the random vs straight pair mostly draws for the same reason.
+
+6. TEST SUITE (97 tests, all green)
+-------------------------------------------------------------------------------
+  tests/golden/test_golden.py  26  M1: physics parity vs graphwar.jar
+  tests/test_parser.py         35  tokenizer/precedence/round-trip
+  tests/test_solver.py         14  M2: emission round-trip, battery, arcs, duds
+  tests/test_agents.py         14  M3: frame round-trip, agent contract,
+                                    full-match no-crash
+  tests/test_eval.py            8  M4: determinism, side balance, metric
+                                    consistency, seed-file reproducibility
+
+  Run:  cd /Users/matthurindo/graph_war && PYTHONPATH=... python3 -m pytest tests/ -q
+
+7. QUALITY GATES
+-------------------------------------------------------------------------------
+  ruff check (E,W,F,I,UP,B,SIM)  : clean over graphwar_sim/, agents/, eval/, tests/
+  mypy --strict (full type hints) : clean over graphwar_sim/, agents/, eval/
+  Python 3.11+                     : running on 3.14.6
+  No eval/exec/sympify in any hot path (expressions go through the ported
+  parser only). All non-source numbers marked # TUNABLE. Clean-room citations
+  to ref/graphwar/src file:line throughout.
+
+8. KNOWN LIMITS / RECORDED DIVERGENCES (docs/OPEN_QUESTIONS.md)
+-------------------------------------------------------------------------------
+  - The per-SHOT rung distribution in the leaderboard (dud=297) is dominated
+    by repeated duds on unreachable maps and cap-length matches; it is NOT a
+    regression vs the M2 battery's per-SEED 33/40 first-shot hit rate.
+  - 7 of 40 seeded maps have no monotone-x path (terrain occlusion): a safe dud
+    is the correct degradation there (seed 31 is a documented knife-edge).
+  - Random-agent friendly-fire observed (2 shots in the leaderboard) — expected
+    from an unaimed baseline; the solver has 0 friendly fire.
+  - Fixed-grid Gaussian basis sits low in the ladder (plan-order divergence,
+    recorded M2).
+
+9. HOW TO RUN
+-------------------------------------------------------------------------------
+  Simulator / solver:      python3 -c "from graphwar_sim import Game; ..."
+  Tests:                   python3 -m pytest tests/ -q
+  Fresh leaderboard:       python3 -m eval --root 1000 --matches 5 --out eval/results
+  Reproduce committed:     python3 -m eval --from-seeds eval/results/seeds.json --out eval/results
+  (commands assume PYTHONPATH=/Users/matthurindo/graph_war)
+
+10. DEFERRED / NEXT STEPS (per IMPLEMENTATION_PLAN.md)
+-------------------------------------------------------------------------------
+  - LLM agents: LLMAgent (core + style prompts), HybridAgent (LLM waypoints ->
+    solver certification). Gate: security review + reuse of the committed
+    frame round-trip test.
+  - Full M4 metrics: mean turns-to-kill, token cost per turn, wall-clock,
+    ablations (ASCII on/off, simulate budget N in {0,3,10}).
+  - Optional: export run_battery/BatteryResult/RUNG_* from graphwar_sim top
+    level if M4 metrics need them.
+===============================================================================
+END OF REPORT
+===============================================================================
