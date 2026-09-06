@@ -19,6 +19,7 @@ checks the Python physics against the compiled Java reference, shot for shot.
 | M3 | Agents (minimal slice: solver + baselines; LLM agents deferred) | ✅ done — `agents/`, frame round-trip test |
 | M4 | Eval harness (win rate + hit rate only) | ✅ done — `eval/`, see `eval/results/leaderboard.md` |
 | UI | Interactive web client (NORMAL_FUNC) | ✅ done — `ui/`, visual spec in `docs/UI_GROUND_TRUTH.md` |
+| M5.4 | LLMAgent (Anthropic tool-use) + spectator UI | ✅ done — `agents/llm_agent.py`; roster entry `llm:<model>`; UI team modes + autoplay/step |
 
 ## Scope
 
@@ -56,8 +57,10 @@ agents/
   base.py          # Agent protocol, Observation (centered world frame), stats
   observation.py   # observe(game): board -> world-frame obs + ASCII map
   simulate_tool.py # fire a candidate through the real physics, no kills applied
+  simulate_budget.py # BudgetedSimulator: per-turn simulate budget + ledger
   baselines.py     # RandomAgent, StraightShotAgent
   solver_agent.py  # wraps the deterministic M2 solver
+  llm_agent.py     # LLMAgent: Anthropic tool-use over the budgeted simulate tool
   emission.py      # format_literal: plain-decimal emission (no exponents)
 eval/
   runner.py        # seeded round-robin match runner + leaderboard writer
@@ -65,8 +68,10 @@ eval/
   __main__.py      # cli: run a fresh leaderboard or reproduce from seeds.json
   results/         # committed leaderboard + per-match plots + seeds.json
 ui/
-  server.py        # FastAPI wrapper: /api/new_game, /api/state, /api/fire
+  server.py        # FastAPI wrapper: /api/new_game, /api/state, /api/fire,
+                   # /api/agent_turn (M5.4 spectator team modes)
   static/          # no-build-step frontend: canvas redraw of the Java game screen
+                   # + match-setup panel / playback bar (play, pause, step, speed)
 tools/
   golden/Graphwar/GoldenShot.java   # in-reference harness that dumps shots as JSON
   jar_probe/                        # one-off terrain probes
@@ -95,6 +100,13 @@ Reproduce the committed leaderboard **from its seed file alone**:
 python3 -m eval --from-seeds eval/results/seeds.json --out eval/results
 ```
 
+M5.4 adds an `llm:<model>` roster entry (opt-in — `DEFAULT_ROSTER` stays
+network-free): pass e.g. `roster=["solver", "llm:gpt-x"]` to
+`eval.runner.build_plan` and set the auth env vars (`ANTHROPIC_AUTH_TOKEN`
+Bearer — the Claude Code / gateway convention — or `ANTHROPIC_API_KEY`
+x-api-key, plus optional `ANTHROPIC_BASE_URL`). The `anthropic` SDK is the
+optional `[llm]` extra.
+
 ## Install
 
 ```bash
@@ -102,7 +114,8 @@ python3 -m pip install -e ".[dev]"
 ```
 
 Requires Python 3.11+, `numpy`, `scipy`, `matplotlib`. Dev extras add
-`pytest`, `ruff`, `mypy`.
+`pytest`, `ruff`, `mypy`; the `llm` extra adds `anthropic` (only needed by
+`agents/llm_agent.py`, imported lazily).
 
 ## Play it (web UI)
 
@@ -118,6 +131,13 @@ seed (the input next to it) for reproducible maps. Two honest repurposings,
 called out in `docs/UI_GROUND_TRUTH.md` §8: the reference's multiplayer chat
 box is now a per-turn match log, and there is no turn countdown (the
 simulator has no turn clock).
+
+M5.4 adds spectator modes in the panel below the game box: pick a driver per
+side (Human / Solver / Random / Straight Shot / LLM with a model name),
+a max-turns draw cap, and a playback bar (Play/Pause, single-Step, and a
+speed selector that scales only the inter-turn delay). Agent sides are
+played one turn per request through `/api/agent_turn`; the log names the
+agent behind every shot (`Player 1 (Solver): y = ... → HIT`).
 
 ## Running the golden tests
 

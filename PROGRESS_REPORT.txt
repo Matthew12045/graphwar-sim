@@ -221,5 +221,45 @@ Committed metrics (root seed 1000, 2x2 soldiers, 30 matches):
   5. M5.3 (simulate_tool call-counter/budget wrapper), M5.4 (personas ->
      agents/personas/_core.md; The_Master_Magician is the EIGHTH persona
      and must be included in the round-robin), M5.5 (branch_hint).
-===============================================================================
+
+9. M5.4 ADDENDUM (LLMAgent + eval registration + UI spectator) — this session
+-------------------------------------------------------------------------------
+Additive note (the body above is stale from M5.2 — do not rewrite it).
+Three commits, one per slice, subjects prefixed M5.4:
+
+  Slice 1  agents/llm_agent.py — LLMAgent: Anthropic Messages API agent over
+           the M5.3 BudgetedSimulator (DEFAULT_SIMULATE_BUDGET per turn).
+           The system prompt is the shared core prepend adapted to the
+           engine's REAL frame (centered world + auto vertical offset) and
+           the REAL SimResult fields — NOT the sketch's shooter-relative
+           frame / {outcome, collision_point, nearest_miss_distance} shape.
+           Client built lazily from ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN
+           (Bearer, the Claude Code / 9arm-gateway convention) falling back
+           to ANTHROPIC_API_KEY (x-api-key); fails at CONSTRUCTION when
+           neither is set (never mid-match). anthropic is the optional
+           `[llm]` extra, imported lazily; mypy override added. Exhaustion
+           returns the safe dud "0*x" (repo convention). Known limitation
+           (documented, not engineered): llm:X vs llm:X mirror matches
+           collide in play_match's stats dict.
+  Slice 2  eval/runner.py — module-level make_agent(name, seed): exact-string
+           factory lookup first, then llm:<model> -> LLMAgent. DEFAULT_ROSTER
+           unchanged (headless default stays network-free); committed eval
+           artifacts untouched. _make_agents delegates to make_agent.
+  Slice 3  ui/server.py — NewGameBody gains team_modes {team1, team2} +
+           max_turns; agents constructed EAGERLY in new_game (unknown mode /
+           missing auth -> clean 400). New POST /api/agent_turn: exactly one
+           agent turn per request, classified with the runner's own
+           _classify/_peek_solver_rung, defensive MalformedFunction -> safe
+           dud (mirrors runner.py:223-228). Turn cap reports game_over +
+           draw_reason TURN_CAP. Frontend: match-setup panel (per-side mode
+           selects, LLM model input defaulting to qwen3.8-27b-fp8, max
+           turns), playback bar (Play/Pause/Step + 0.5x-4x speed scaling the
+           inter-turn delay only), log lines name the agent. LLM latency
+           happens inside the server module lock (single-user UI, documented).
+
+  Gates: mypy --strict graphwar_sim/ agents/ eval/ clean; ruff clean; full
+  pytest (--ignore=tests/golden) green. Live gateway probe (tool-use support
+  of qwen3.8-27b-fp8 through gateway.9arm.co) was the single open empirical
+  risk — see the session's probe outcome before further LLM work.
+==============================================================================
 END OF REPORT
