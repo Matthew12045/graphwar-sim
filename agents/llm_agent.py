@@ -41,9 +41,12 @@ The ``anthropic`` SDK is an OPTIONAL dependency
 :func:`_build_client` — no module-level import, so this module (and any
 roster registration) is safe to import without the extra installed. Tests
 inject fake clients via ``client=``; the agent relies only on
-``messages.create(...)`` returning an object with ``.stop_reason`` and
-``.content`` blocks (``.type``/``.text`` for text, ``.id``/``.name``/
-``.input`` for tool_use) — never on SDK-internal types.
+``messages.create(...)`` / ``messages.stream(...)`` returning a message
+object with ``.stop_reason`` and ``.content`` blocks (``.type``/``.text``
+for text, ``.id``/``.name``/``.input`` for tool_use) — never on
+SDK-internal types. Long thinking responses are STREAMED when the client
+supports it (the gateway's Cloudflare proxy times out non-streaming
+generations at 120s); the fakes exercise the non-streaming fallback.
 """
 
 from __future__ import annotations
@@ -76,9 +79,41 @@ _DEFAULT_MAX_ATTEMPTS: int = 4
 # stays API-valid across attempts. # TUNABLE — not from source.
 _MAX_TOOL_ROUNDS_PER_TURN: int = 8
 
-# max_tokens for every messages.create call (the answer is one line).
+# max_tokens for every API call. The 9arm gateway serves a 128k-context
+# reasoning model (CLAUDE_CODE_MAX_CONTEXT_TOKENS=128000) that visibly
+# thinks for tens of thousands of tokens before acting — give it room to
+# think (user-locked live-validation decision). # TUNABLE — not from source.
+_MAX_OUTPUT_TOKENS: int = 128000
+
+# Retries for transient gateway deaths on ONE API call (Cloudflare's ~120s
+# proxy read limit truncates long thinking generations: 524 non-streaming,
+# a truncated stream mid-flight). Each retry regenerates from scratch.
 # # TUNABLE — not from source.
-_MAX_OUTPUT_TOKENS: int = 1024
+_MAX_API_RETRIES: int = 2
+
+# Exception TYPE NAMES retried by _create (duck-typed: the anthropic SDK and
+# its httpx transport raise these; the SDK does not auto-retry mid-stream
+# disconnects). Non-retryable errors (auth, bad request) propagate.
+_RETRYABLE_API_ERROR_NAMES: frozenset[str] = frozenset(
+    {
+        "APIConnectionError",
+        "InternalServerError",
+        "RemoteProtocolError",
+        "ReadTimeout",
+        "ConnectTimeout",
+        "ReadError",
+        "WriteError",
+        "ConnectError",
+    }
+)
+
+
+def _is_retryable_api_error(exc: Exception) -> bool:
+    """True for transient transport/gateway failures (see
+    ``_RETRYABLE_API_ERROR_NAMES``) — name-based so the module needs no
+    import from the optional SDK or its transport."""
+    return type(exc).__name__ in _RETRYABLE_API_ERROR_NAMES
+
 
 # Error text for an over-budget simulate call (the loop's cost stop-signal).
 _BUDGET_EXHAUSTED_TEXT = "simulate budget exhausted — commit your best expression now"
@@ -319,13 +354,37 @@ class LLMAgent:
     # -- internals ------------------------------------------------------------
 
     def _create(self, messages: list[dict[str, Any]]) -> Any:
-        return self._client.messages.create(
-            model=self._model,
-            max_tokens=_MAX_OUTPUT_TOKENS,
-            system=_SYSTEM_PROMPT,
-            tools=[_SIMULATE_TOOL],
-            messages=messages,
-        )
+        """One API round-trip: streaming when the client supports it.
+
+        The 9arm gateway serves a reasoning model that thinks for MINUTES
+        before acting and forwards nothing until a whole block finishes, so
+        Cloudflare's ~120s proxy read limit kills long generations mid-call
+        (524 non-streaming, truncated stream mid-flight). Each retry
+        regenerates from scratch — a fresh generation may land under the
+        limit. Clients that expose ``messages.stream`` get the streaming
+        path; test fakes expose only ``messages.create`` and take the
+        non-streaming fallback — the response surface is identical
+        (``.stop_reason`` + ``.content`` blocks).
+        """
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": _MAX_OUTPUT_TOKENS,
+            "system": _SYSTEM_PROMPT,
+            "tools": [_SIMULATE_TOOL],
+            "messages": messages,
+        }
+        stream_factory = getattr(self._client.messages, "stream", None)
+        for retry in range(_MAX_API_RETRIES + 1):
+            try:
+                if callable(stream_factory):
+                    with stream_factory(**kwargs) as stream:
+                        return stream.get_final_message()
+                return self._client.messages.create(**kwargs)
+            except Exception as exc:  # noqa: BLE001 - see _is_retryable_api_error
+                if retry >= _MAX_API_RETRIES or not _is_retryable_api_error(exc):
+                    raise
+                continue
+        raise AssertionError("unreachable")  # for the type checker
 
     def _run_attempt(self, messages: list[dict[str, Any]], sim: BudgetedSimulator) -> str | None:
         """One attempt: API round-trips until a final (non-tool_use) response.

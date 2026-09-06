@@ -75,6 +75,44 @@ class _FakeClient:
         self.messages = _FakeMessages(responses)
 
 
+class _FakeStream:
+    def __init__(self, response: _Response) -> None:
+        self._response = response
+        self.opened = False
+
+    def __enter__(self) -> _FakeStream:
+        self.opened = True
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        return False
+
+    def get_final_message(self) -> _Response:
+        return self._response
+
+
+class _StreamingFakeMessages:
+    """A client exposing ``messages.stream`` (the real SDK's surface) — the
+    agent must prefer it over ``messages.create`` (Cloudflare 120s proxy
+    timeout on the gateway makes streaming mandatory for long thinking)."""
+
+    def __init__(self, response: _Response) -> None:
+        self._response = response
+        self.stream_kwargs: dict[str, Any] | None = None
+
+    def stream(self, **kwargs: Any) -> _FakeStream:
+        self.stream_kwargs = kwargs
+        return _FakeStream(self._response)
+
+    def create(self, **kwargs: Any) -> _Response:  # pragma: no cover - must not run
+        raise AssertionError("create() called although stream() is available")
+
+
+class _StreamingFakeClient:
+    def __init__(self, response: _Response) -> None:
+        self.messages = _StreamingFakeMessages(response)
+
+
 def _text(text: str) -> _Response:
     return _Response("end_turn", [_TextBlock(text)])
 
@@ -222,6 +260,18 @@ def test_budget_denial_returns_error_and_does_not_delegate(
 
 
 # --- 6. constructor fails fast without auth env vars ---------------------------
+
+
+def test_streaming_client_is_preferred_when_available() -> None:
+    response = _Response("end_turn", [_TextBlock("0.05*x")])
+    agent = LLMAgent(model="fake-model", client=_StreamingFakeClient(response))
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "0.05*x"
+    kwargs = agent._client.messages.stream_kwargs
+    assert kwargs is not None
+    assert kwargs["max_tokens"] == 128000  # the gateway's thinking budget
+    assert kwargs["system"] == _SYSTEM_PROMPT
+    assert kwargs["tools"][0]["name"] == "simulate"
 
 
 def test_missing_auth_env_vars_raise_at_construction(
