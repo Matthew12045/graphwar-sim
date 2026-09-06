@@ -28,7 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from graphwar_sim import TEAM1, TEAM2, Game
+from graphwar_sim import Game
 from graphwar_sim.config import PLANE_GAME_LENGTH, PLANE_HEIGHT, PLANE_LENGTH
 from graphwar_sim.physics import ShotResult
 
@@ -144,17 +144,18 @@ def plane_from_world(
     height: int = PLANE_HEIGHT,
     game_length: int = PLANE_GAME_LENGTH,
 ) -> tuple[float, float]:
-    """Inverse of :func:`world_coords` (GROUND_TRUTH.md §1.4). Plane y is down."""
+    """Inverse of :func:`world_coords` (GROUND_TRUTH.md §1.4). Plane y is down.
+
+    Rounds a world-frame expression result back to board pixels (e.g. for a
+    shooter-relative ergonomics conversion in a future LLM agent prompt, per
+    IMPLEMENTATION_PLAN.md Phase 3). Covered by the round-trip assertion in
+    ``tests/test_agents.py``.
+    """
     px = length * wx / game_length + length / 2.0
     py = -length * wy / game_length + height / 2.0
     if mirrored:
         px = length - px
     return px, py
-
-
-def same_side(team_id: int, other: int) -> bool:
-    """True when ``team_id`` and ``other`` are the same side."""
-    return team_id == other
 
 
 __all__ = [
@@ -164,8 +165,5 @@ __all__ = [
     "Observation",
     "hit_team_counts",
     "plane_from_world",
-    "same_side",
     "world_coords",
-    "TEAM1",
-    "TEAM2",
 ]

@@ -15,7 +15,7 @@ Definitions
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 from graphwar_sim import config
 
@@ -81,12 +81,6 @@ class AgentLeaderRow:
             str(self.parse_failures),
             str(self.retries),
         )
-
-    def as_dict(self) -> dict[str, object]:
-        return asdict(self) | {
-            "win_rate": self.win_rate,
-            "hit_rate": self.hit_rate,
-        }
 
 
 def team_label(team_id: int | None) -> str:

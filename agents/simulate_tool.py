@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from graphwar_sim import TEAM2, Game, PolishNotationFunction
 from graphwar_sim.physics import process_function_range
 
-from .base import Observation, hit_team_counts
+from .base import hit_team_counts
 
 
 @dataclass(frozen=True)
@@ -34,12 +34,12 @@ class SimResult:
     error: str | None = None
 
 
-def simulate(game: Game, expr: str, obs: Observation | None = None) -> SimResult:
+def simulate(game: Game, expr: str) -> SimResult:
     """Fire ``expr`` through the physics without applying kills.
 
-    ``obs`` is accepted for interface symmetry with :meth:`Agent.act` (LLM
-    agents later build their prompt from it) but is not required — the game
-    state alone determines the outcome.
+    The game state alone determines the outcome; the expression is evaluated
+    in the centered world frame of the current shooter (see
+    :func:`~agents.observation.observe`).
     """
     try:
         f = PolishNotationFunction(expr)

@@ -32,6 +32,7 @@ from agents import (
     SolverAgent,
     StraightShotAgent,
     observe,
+    plane_from_world,
 )
 from graphwar_sim import (
     SOLDIER_RADIUS,
@@ -80,6 +81,11 @@ def test_observe_presents_centered_world_frame() -> None:
     assert obs.shooter == pytest.approx(SHOOTER_T1_WORLD, abs=1e-9)
     assert _approx_points(obs.enemy_soldiers, [ENEMY_T2_WORLD], tol=1e-9)
     assert SHOOTER_T1_WORLD in obs.own_soldiers
+    # The inverse transform round-trips back to the plane position
+    # (GROUND_TRUTH.md §1.4), covering agents.base.plane_from_world.
+    px, py = plane_from_world(*obs.enemy_soldiers[0], mirrored=False)
+    assert px == pytest.approx(670.0, abs=1e-9)
+    assert py == pytest.approx(150.0, abs=1e-9)
 
 
 def test_observe_mirrors_team2_shooter() -> None:
