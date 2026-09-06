@@ -132,9 +132,10 @@ from .physics import _get_start_angle
 _SIGMA_LADDER: tuple[float, ...] = (4.0, 2.0, 1.0, 0.5, 0.25)
 # K best branches per sigma (5.2.md §8: "K is TUNABLE, default small").
 _MAX_BRANCHES: int = 4
-# Chains extracted from the sweep BEFORE the cell-wise filter + K-ranking
-# (the sweep's union-merged interval sets can contain many parent paths; we
-# need enough to find chord-certifiable ones).
+# Maximum chains the sweep may return. Now ONLY the sweep's chain cap
+# feeding the §8/§9 reachability oracle (reachable / first_blocked_column);
+# branch geometry comes from the dedicated _branch_paths layered-DAG DP, not
+# from these backtraced chains.
 _SWEEP_CHAINS: int = 16
 # Nearest reachable targets attempted per invocation.
 _MAX_TARGETS: int = 2
@@ -168,6 +169,9 @@ _RECHECK_TOL: float = 1.0e-9
 _LP_ROW_TOL: float = 1.0e-7
 # Big-M multiplier for the cardinality MILP (§7; derivation at _big_m).
 _BIGM_FACTOR: float = 4.0
+# Node penalty for the K-paths diversity re-runs (§8): large enough to make the
+# DP prefer never-used components whenever one exists. # TUNABLE.
+_PATH_PENALTY: float = 1.0e3
 
 # --- Derived constants --------------------------------------------------------
 
@@ -696,15 +700,163 @@ def _posthoc_gate(
 # --- Branch selection (5.2.md §8) ----------------------------------------------
 
 
-def _chain_cost(chain: Chain, du: float) -> float:
-    """Slope-change proxy (§8 edge cost): total variation of the midline
-    slope. The M5.1 sweep's parent-DAG backtraces ARE the slope-cap-feasible
-    paths; cost-ordering them = taking the K shortest under this proxy."""
-    mid = (np.asarray(chain.L, dtype=float) + np.asarray(chain.H, dtype=float)) / 2.0
-    if mid.size < 3:
-        return 0.0
-    slopes = np.diff(mid) / du
-    return float(np.sum(np.abs(np.diff(slopes))))
+def _branch_paths(
+    mx: float,
+    my: float,
+    tx: float,
+    ty: float,
+    circles: Sequence[tuple[int, int, int]],
+    exclusions: Sequence[tuple[float, float, float]],
+    inverted: bool,
+    target_index: int,
+    k_paths: int,
+) -> list[Chain]:
+    """K branch paths for one target from a dedicated branch-path DP (5.2.md §8).
+
+    This replaces the M5.1 sweep's backtraced chains as the BRANCH GEOMETRY
+    source.  The sweep's union-merge keeps ONE parent per merged interval, so a
+    backtraced "chain" splices a top-branch path onto a bottom-branch parent --
+    a vertical plunge of ~29 world units inside one cell.  That is slope-feasible
+    (``S · du`` exceeds the band height) but chord-uncertifiable, and the
+    cell-wise envelope therefore kills every such chain; each target ended
+    BASIS_INFEASIBLE/UNCERTIFIED on dense maps.  Reconstructing branch geometry
+    independently fixes that.
+
+    The optimisation is EXACT.  Build a layered DAG whose layers are the sample
+    columns ``k``; the nodes of layer ``k`` are ``(k, i)`` = free component ``i``
+    of ``corridor._column_free(columns[k], mirrored_circles, exclusions)``, the
+    components being already merged and disjoint.  An edge ``(k,i) -> (k+1,j)``
+    exists exactly when the slope-cap dilation of ``comp_i`` touches ``comp_j``:
+    ``dilate(comp_i, S · du) ∩ comp_j ≠ ∅``, with closed-touch
+    counted as ``clo <= ahi + d and chi >= alo - d`` for ``comp_i = (alo, ahi)``,
+    ``comp_j = (clo, chi)`` and ``d = corridor._SLOPE_CAP * _DU``.  Edge cost is
+    the §8 curvature-demand proxy ``du · slope^2`` with
+    ``slope = (mid_j - mid_i)/du`` and ``mid`` the component midpoint.  The
+    layered structure makes a left-to-right column-sweep DP equivalent to
+    Dijkstra on the DAG: every producer state is settled once by the time its
+    successors are processed, so the DP is exact, not greedy.
+
+    Terminals are the columns ``k`` with ``|columns[k] - tx| <= WORLD_RADIUS``
+    whose component interval intersects the target disk ``[ty - R, ty + R]``
+    (the sweep's goal-disk rule); the cheapest finite eligible terminal ends a
+    branch, and the per-column parent arrays backtrace into a synthetic
+    ``Chain(L=(lo,...), H=(hi,...), goal_column=k)``.  The first layer is
+    restricted to components containing the muzzle ``my`` -- the muzzle column
+    is free before we are called (``reach.reachable``), but its free set can
+    contain several components, and starting in a different one would emit a
+    phantom branch.  If no column-0 component contains the muzzle, ``[]`` is
+    returned.
+
+    K paths come from re-running the DP with ``+_PATH_PENALTY`` added to every
+    node used by an earlier path.  This is a documented DEVIATION from exact
+    K-best (recorded in ``docs/OPEN_QUESTIONS.md`` entry (j)): exact K-best
+    needs a (path, node) state space that is not worth it at K=4, and the
+    penalty picks out the K most diverse cheap branches, which is what the cell
+    envelope actually needs.  Emission stops at the first re-run with no finite
+    eligible terminal; the returned list is cheapest-first because each re-run's
+    chosen terminal is the next-cheapest distinct path.
+    """
+    circ = [(config.PLANE_LENGTH - cx, cy, r) for cx, cy, r in circles] if inverted else circles
+    radius = corridor.WORLD_RADIUS
+    d = corridor._SLOPE_CAP * _DU
+
+    # Same column grid as corridor.sweep_target: muzzle -> far edge of the goal
+    # disk. Stop at the first fully-blocked column (the sweep already guarantees
+    # the muzzle column is free before we are called).
+    span = tx - mx + radius
+    k_max = int(math.ceil(span / _DU))
+    columns: list[float] = []
+    comps_by_col: list[list[tuple[float, float]]] = []
+    comps0 = corridor._column_free(mx, circ, exclusions)
+    if not comps0:
+        return []
+    columns.append(mx)
+    comps_by_col.append(comps0)
+    for k in range(1, k_max + 1):
+        wx = mx + k * _DU
+        comps = corridor._column_free(wx, circ, exclusions)
+        if not comps:
+            break
+        columns.append(wx)
+        comps_by_col.append(comps)
+
+    start = [i for i, (lo, hi) in enumerate(comps_by_col[0]) if lo <= my <= hi]
+    if not start:
+        return []
+
+    used: list[set[int]] = [set() for _ in columns]
+    paths: list[Chain] = []
+    n_cols = len(columns)
+
+    for _ in range(k_paths):
+        dists: list[list[float]] = []
+        parents: list[list[int | None]] = []
+        row0 = [math.inf] * len(comps_by_col[0])
+        for i in start:
+            row0[i] = _PATH_PENALTY if i in used[0] else 0.0
+        dists.append(row0)
+        parents.append([None] * len(comps_by_col[0]))
+        for k in range(1, n_cols):
+            prev = dists[k - 1]
+            prev_comps = comps_by_col[k - 1]
+            cur_comps = comps_by_col[k]
+            drow = [math.inf] * len(cur_comps)
+            prow: list[int | None] = [None] * len(cur_comps)
+            for j, (clo, chi) in enumerate(cur_comps):
+                jmid = (clo + chi) / 2.0
+                best = math.inf
+                arg: int | None = None
+                for i, (alo, ahi) in enumerate(prev_comps):
+                    if clo > ahi + d or chi < alo - d:
+                        continue
+                    if not math.isfinite(prev[i]):
+                        continue
+                    imid = (alo + ahi) / 2.0
+                    slope = (jmid - imid) / _DU
+                    cand = prev[i] + _DU * slope * slope
+                    if cand < best:
+                        best = cand
+                        arg = i
+                if best < math.inf and j in used[k]:
+                    best += _PATH_PENALTY
+                drow[j] = best
+                prow[j] = arg
+            dists.append(drow)
+            parents.append(prow)
+
+        terminals: list[tuple[float, int, int]] = []  # (cost, k, i)
+        for k in range(n_cols):
+            if abs(columns[k] - tx) > radius:
+                continue
+            for i, (lo, hi) in enumerate(comps_by_col[k]):
+                if lo <= ty + radius and hi >= ty - radius and math.isfinite(dists[k][i]):
+                    terminals.append((dists[k][i], k, i))
+        if not terminals:
+            break
+
+        _, kwin, iwin = min(terminals)
+        stack: list[tuple[int, int]] = []
+        k, i = kwin, iwin
+        while True:
+            stack.append((k, i))
+            p = parents[k][i]
+            if p is None:
+                break
+            i = p
+            k -= 1
+        stack.reverse()
+        paths.append(
+            Chain(
+                target_index=target_index,
+                L=tuple(comps_by_col[kk][ii][0] for kk, ii in stack),
+                H=tuple(comps_by_col[kk][ii][1] for kk, ii in stack),
+                goal_column=kwin,
+            )
+        )
+        for kk, ii in stack:
+            used[kk].add(ii)
+
+    return paths
 
 
 def _branch_kind(chain: Chain, u_T: float, dy_T: float) -> str:
@@ -1020,7 +1172,7 @@ def solve_target(
 ) -> CCFSolution:
     """Run the full CCF search for ONE target (5.2.md §8-§9).
 
-    Sweep (CCF teammate radius) -> K best branches by slope-change proxy ->
+    Sweep (CCF teammate radius) -> K best branches by the §8 layered-DAG DP ->
     sigma ladder coarse->fine (first feasible sigma wins) -> per branch the
     allowance-mode LP, falling back to the tight-mode LP for the same branch.
     """
@@ -1069,15 +1221,19 @@ def solve_target(
         cert.binding = f"j_max={budget.j_max}<2"
         return CCFSolution(target_index, [], cert)
 
-    # Branch selection (§8): keep only chains that SURVIVE the cell-wise
-    # envelope (a chain whose consecutive intervals jump across the band —
-    # slope-feasible at S·du > band height — cannot carry a chord certificate
-    # and would die cell-wise at the plunge anyway), then rank the survivors
-    # by the slope-change proxy and take the K cheapest. Cell geometry does
-    # not depend on sigma, so this runs ONCE.
+    # Branch selection (§8): the dedicated layered-DAG DP (_branch_paths)
+    # yields K shortest branch paths that each stay inside one free-component
+    # family — no top-on-bottom parent splice, so no vertical plunge to die
+    # cell-wise at a chord-uncertifiable jump. DP order is already
+    # cheapest-first (K is passed into _branch_paths), so no ranking pass of
+    # the converted branches and no slicing are needed. Cell geometry does
+    # not depend on sigma, so this runs ONCE. Only chains that SURVIVE the
+    # cell-wise envelope are kept.
     branches: list[tuple[Chain, str, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
     dead_branches = 0
-    for chain in reach.chains:
+    for chain in _branch_paths(
+        mx, my, tx, ty, circles, exclusions, inverted, target_index, k_branches
+    ):
         cells = corridor.chain_cells(chain, mx, circles, exclusions, _DU)
         if cells is None:
             dead_branches += 1
@@ -1107,8 +1263,6 @@ def solve_target(
         )
     if dead_branches:
         trace.append(f"cell_wise_dead_branches={dead_branches}")
-    branches.sort(key=lambda t: _chain_cost(t[0], _DU))
-    branches = branches[:k_branches]
     cert.branch_count = len(branches)
     if not branches:
         cert.outcome = CCFOutcome.BASIS_INFEASIBLE

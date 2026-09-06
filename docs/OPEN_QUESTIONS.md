@@ -313,6 +313,40 @@ authority; a false-unreachable costs a turn, never a wrong shot.
 
 ---
 
+## M5.2: CCF — findings
+
+### (i) Corridor pixel-cell collision fidelity — the free set was half a pixel too generous
+
+**Finding:** the physics tests `collide_point(int(x), int(y))` — a plane point in
+row `py` spans the full pixel cell `[py, py+1)`, and `make_circle_obstacle`
+blocks integer rows whose CENTER is inside the circle (`(py - cy)^2 <= s^2`).
+The corridor's blocked band therefore covers the FULL pixel cells of the blocked
+rows `[py_lo, py_hi]`: `[y(py_hi + 1), y(py_lo)]` — not just up to `y(py_hi)`
+(the row's top edge). The old band admitted curve-edge points that COLLIDE in
+the physics. For the M5.1 sweep (oracle-gated) that was merely optimistic; for
+an M5.2 CCF CERTIFICATE it is fatal, so `_column_free` and
+`_cell_obstacle_band` now use the full-cell band, plus an empty-rows guard when
+a circle covers no integer row center at a column. Consequence: M5.1 verdicts
+stay sound (the sweep is now slightly more conservative). Recorded, not tuned
+away. Same fidelity pass: `_side_at` classifies a cell band that only PARTIALLY
+overlaps a branch (top/bottom sliver) as ceiling/floor — only a band strictly
+CONTAINING the branch is unclassifiable;
+`tests/test_corridor.py::test_cell_wise_envelope_catches_a_synthetic_spike`
+asserts the spike's cells raise the floor (narrowing), not chain death.
+
+### (j) §8 K branch paths — diversity-penalty DP re-runs, not exact K-best
+
+**Question (5.2.md §8):** "Take the K best paths."
+
+**Answer (recorded deviation):** exact K-best needs a (path, node) state space
+that is not worth its cost at K=4. `graphwar_sim/ccf.py::_branch_paths` instead
+re-runs the exact shortest-path DP with `+_PATH_PENALTY` added to every node
+(component) used by an earlier path, which picks the K most diverse cheap
+branches — what the cell-wise envelope actually consumes. The DP itself stays
+exact (layered DAG; the column sweep is equivalent to Dijkstra). The choice and
+its rationale live in the `_branch_paths` docstring; this entry records the
+deviation from literal K-best.
+
 ## Genuinely open (deferred to later milestones)
 
 - **Token-cost / ablation metrics (M4).** The minimal viable slice skips
