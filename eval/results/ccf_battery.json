@@ -1,0 +1,2430 @@
+{
+  "meta": {
+    "battery": "M5.2 CCF",
+    "context": "M4 context: root_seed=1000, 3-roster round robin, 5 matches/pair x2, num_soldiers=2, max_turns=100 (from eval/results/seeds.json)",
+    "matches_played": 20,
+    "solver_turns": 274,
+    "source_script": "eval/run_ccf_battery.py",
+    "wall_seconds": 356.663
+  },
+  "matches": [
+    {
+      "seed": 1000,
+      "pair": "solver vs random",
+      "winner": null,
+      "turns": 100,
+      "draw_reason": "TURN_CAP"
+    },
+    {
+      "seed": 1001,
+      "pair": "random vs solver",
+      "winner": 2,
+      "turns": 2,
+      "draw_reason": null
+    },
+    {
+      "seed": 1002,
+      "pair": "solver vs random",
+      "winner": 1,
+      "turns": 3,
+      "draw_reason": null
+    },
+    {
+      "seed": 1003,
+      "pair": "random vs solver",
+      "winner": 2,
+      "turns": 4,
+      "draw_reason": null
+    },
+    {
+      "seed": 1004,
+      "pair": "solver vs random",
+      "winner": null,
+      "turns": 100,
+      "draw_reason": "TURN_CAP"
+    },
+    {
+      "seed": 1005,
+      "pair": "random vs solver",
+      "winner": 2,
+      "turns": 2,
+      "draw_reason": null
+    },
+    {
+      "seed": 1006,
+      "pair": "solver vs random",
+      "winner": 1,
+      "turns": 3,
+      "draw_reason": null
+    },
+    {
+      "seed": 1007,
+      "pair": "random vs solver",
+      "winner": null,
+      "turns": 100,
+      "draw_reason": "TURN_CAP"
+    },
+    {
+      "seed": 1008,
+      "pair": "solver vs random",
+      "winner": 1,
+      "turns": 1,
+      "draw_reason": null
+    },
+    {
+      "seed": 1009,
+      "pair": "random vs solver",
+      "winner": 2,
+      "turns": 4,
+      "draw_reason": null
+    },
+    {
+      "seed": 2000,
+      "pair": "solver vs straight",
+      "winner": null,
+      "turns": 100,
+      "draw_reason": "TURN_CAP"
+    },
+    {
+      "seed": 2001,
+      "pair": "straight vs solver",
+      "winner": 2,
+      "turns": 2,
+      "draw_reason": null
+    },
+    {
+      "seed": 2002,
+      "pair": "solver vs straight",
+      "winner": 1,
+      "turns": 3,
+      "draw_reason": null
+    },
+    {
+      "seed": 2003,
+      "pair": "straight vs solver",
+      "winner": 2,
+      "turns": 4,
+      "draw_reason": null
+    },
+    {
+      "seed": 2004,
+      "pair": "solver vs straight",
+      "winner": 1,
+      "turns": 3,
+      "draw_reason": null
+    },
+    {
+      "seed": 2005,
+      "pair": "straight vs solver",
+      "winner": 2,
+      "turns": 2,
+      "draw_reason": null
+    },
+    {
+      "seed": 2006,
+      "pair": "solver vs straight",
+      "winner": 1,
+      "turns": 1,
+      "draw_reason": null
+    },
+    {
+      "seed": 2007,
+      "pair": "straight vs solver",
+      "winner": 2,
+      "turns": 4,
+      "draw_reason": null
+    },
+    {
+      "seed": 2008,
+      "pair": "solver vs straight",
+      "winner": 1,
+      "turns": 3,
+      "draw_reason": null
+    },
+    {
+      "seed": 2009,
+      "pair": "straight vs solver",
+      "winner": null,
+      "turns": 100,
+      "draw_reason": "TURN_CAP"
+    }
+  ],
+  "shots": [
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "ccf",
+      "expr_len": 206,
+      "expression": "(((-11.366812456533)*e^(-0.03125(x+(14.077922077922))^2)+(-3.960521500088)*e^(-0.03125(x-(7.779220779221))^2))+((-18.601334252469)*e^(-0.03125(x-(11.422077922078))^2)+((0.273628289809)*x+(8.009562287436))))",
+      "cert": {
+        "outcome": "CERTIFIED",
+        "sigma": 4.0,
+        "ladder_depth": 0,
+        "branch_index": 0,
+        "branch_count": 2,
+        "branch_kind": "over",
+        "slack_total": 0.0,
+        "nonzero_weights": 3,
+        "emitted_length": 206,
+        "char_limit": 2000,
+        "milp_fired": false,
+        "solve_seconds": 0.22537662499962607,
+        "binding": "upper@u=29.35"
+      },
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1000,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "per_target_gaussian",
+      "expr_len": 100,
+      "expression": "(-4.547303825529)*e^(-0.35(x-(19.480519480519))^2)+(2.081961172632)*e^(-0.35(x-(23.961038961039))^2)",
+      "cert": null,
+      "seed": 1001,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "parabola",
+      "expr_len": 40,
+      "expression": "(0.030358769753)*x*(x-(21.233766233766))",
+      "cert": null,
+      "seed": 1002,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "arc",
+      "expr_len": 30,
+      "expression": "(0.005)*x^2+(-0.31660929432)*x",
+      "cert": null,
+      "seed": 1002,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "line",
+      "expr_len": 19,
+      "expression": "(-0.635294117647)*x",
+      "cert": null,
+      "seed": 1003,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "per_target_gaussian",
+      "expr_len": 49,
+      "expression": "(12.987012987013)*e^(-0.35(x-(15.38961038961))^2)",
+      "cert": null,
+      "seed": 1003,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1004,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "per_target_gaussian",
+      "expr_len": 87,
+      "expression": "(4.610400587652)*e^(-0.35(x-(15.649350649351))^2)+(-0.779285722765)*e^(-0.35(x-(10))^2)",
+      "cert": null,
+      "seed": 1005,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "ccf",
+      "expr_len": 198,
+      "expression": "(((-9.135742206357)*e^(-0.125(x+(15.194805194805))^2)+(19.747765573439)*e^(-0.125(x+(13.211038961039))^2))+((6.897104470893)*e^(-0.125(x+(11.227272727273))^2)+((0.425710761773)*x+(2.565392390368))))",
+      "cert": {
+        "outcome": "CERTIFIED",
+        "sigma": 2.0,
+        "ladder_depth": 1,
+        "branch_index": 1,
+        "branch_count": 3,
+        "branch_kind": "under",
+        "slack_total": 0.0,
+        "nonzero_weights": 3,
+        "emitted_length": 198,
+        "char_limit": 2000,
+        "milp_fired": false,
+        "solve_seconds": 1.2310042919998523,
+        "binding": "lower@u=6.04"
+      },
+      "seed": 1006,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "ccf",
+      "expr_len": 194,
+      "expression": "(((0.245041817803)*e^(-0.125(x+(11.12012987013))^2)+(1.485813967529)*e^(-0.125(x+(9.188311688312))^2))+((6.562051915384)*e^(-0.125(x-(4.334415584416))^2)+((-0.13464771388)*x+(-2.141031083306))))",
+      "cert": {
+        "outcome": "CERTIFIED",
+        "sigma": 2.0,
+        "ladder_depth": 1,
+        "branch_index": 0,
+        "branch_count": 3,
+        "branch_kind": "over",
+        "slack_total": 0.0,
+        "nonzero_weights": 3,
+        "emitted_length": 194,
+        "char_limit": 2000,
+        "milp_fired": false,
+        "solve_seconds": 0.4420191250028438,
+        "binding": "lower@u=1.29"
+      },
+      "seed": 1006,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "arc",
+      "expr_len": 31,
+      "expression": "(-0.025)*x^2+(0.395516069297)*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 1007,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "per_target_gaussian",
+      "expr_len": 99,
+      "expression": "(6.558312019897)*e^(-0.35(x-(22.987012987013))^2)+(2.077513149492)*e^(-0.35(x-(17.727272727273))^2)",
+      "cert": null,
+      "seed": 1008,
+      "match": "solver vs random"
+    },
+    {
+      "rung": "arc",
+      "expr_len": 26,
+      "expression": "(0)*x^2+(0.011006289308)*x",
+      "cert": null,
+      "seed": 1009,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "per_target_gaussian",
+      "expr_len": 50,
+      "expression": "(-1.168831168831)*e^(-0.35(x-(11.948051948052))^2)",
+      "cert": null,
+      "seed": 1009,
+      "match": "random vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2000,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "per_target_gaussian",
+      "expr_len": 100,
+      "expression": "(0.454545404735)*e^(-0.35(x-(20.324675324675))^2)+(20.974025972946)*e^(-0.35(x-(12.792207792208))^2)",
+      "cert": null,
+      "seed": 2001,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "ccf",
+      "expr_len": 91,
+      "expression": "((0.898249328937)*e^(-0.03125(x+(7.373737373737))^2)+((0.284956590354)*x+(4.105374184147)))",
+      "cert": {
+        "outcome": "CERTIFIED",
+        "sigma": 4.0,
+        "ladder_depth": 0,
+        "branch_index": 0,
+        "branch_count": 1,
+        "branch_kind": "under",
+        "slack_total": 0.0,
+        "nonzero_weights": 1,
+        "emitted_length": 91,
+        "char_limit": 2000,
+        "milp_fired": false,
+        "solve_seconds": 0.17238854199968046,
+        "binding": "lower@u=6.03"
+      },
+      "seed": 2002,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "parabola",
+      "expr_len": 40,
+      "expression": "(0.002752359165)*x*(x-(14.675324675325))",
+      "cert": null,
+      "seed": 2002,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "arc",
+      "expr_len": 31,
+      "expression": "(0.015)*x^2+(-0.117049414001)*x",
+      "cert": null,
+      "seed": 2003,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "arc",
+      "expr_len": 21,
+      "expression": "(0.055)*x^2+(-0.75)*x",
+      "cert": null,
+      "seed": 2003,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "ccf",
+      "expr_len": 37,
+      "expression": "((0.035561877667)*x+(0.782823151244))",
+      "cert": {
+        "outcome": "CERTIFIED",
+        "sigma": 4.0,
+        "ladder_depth": 0,
+        "branch_index": 0,
+        "branch_count": 4,
+        "branch_kind": "under",
+        "slack_total": 0.0,
+        "nonzero_weights": 0,
+        "emitted_length": 37,
+        "char_limit": 2000,
+        "milp_fired": false,
+        "solve_seconds": 0.13456120800037752,
+        "binding": "upper@u=10.78"
+      },
+      "seed": 2004,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "arc",
+      "expr_len": 30,
+      "expression": "(0.02)*x^2+(-0.078171091445)*x",
+      "cert": null,
+      "seed": 2004,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "fixed_grid_gaussian",
+      "expr_len": 559,
+      "expression": "(11.288951884121)*e^(-0.35(x+(18.896103896104))^2)+(0.568551008067)*e^(-0.35(x+(15.974025974026))^2)+(0.000072630138)*e^(-0.35(x+(13.051948051948))^2)+(0.000000000024)*e^(-0.35(x+(10.12987012987))^2)+(0)*e^(-0.35(x+(7.207792207792))^2)+(0)*e^(-0.35(x+(4.285714285714))^2)+(0)*e^(-0.35(x+(1.363636363636))^2)+(-0.000000000007)*e^(-0.35(x-(1.558441558442))^2)+(-0.000026578633)*e^(-0.35(x-(4.480519480519))^2)+(-0.271391342389)*e^(-0.35(x-(7.402597402597))^2)+(-7.240077695131)*e^(-0.35(x-(10.324675324675))^2)+(-4.681412944402)*e^(-0.35(x-(13.246753246753))^2)",
+      "cert": null,
+      "seed": 2005,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "per_target_gaussian",
+      "expr_len": 88,
+      "expression": "(-4.415584415584)*e^(-0.35(x-(20.064935064935))^2)+(-2.272727272727)*e^(-0.35(x-(10))^2)",
+      "cert": null,
+      "seed": 2006,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "line",
+      "expr_len": 18,
+      "expression": "(0.912718204489)*x",
+      "cert": null,
+      "seed": 2007,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "arc",
+      "expr_len": 32,
+      "expression": "(-0.005)*x^2+(-0.066691641692)*x",
+      "cert": null,
+      "seed": 2007,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "arc",
+      "expr_len": 29,
+      "expression": "(0.01)*x^2+(0.007997557998)*x",
+      "cert": null,
+      "seed": 2008,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "ccf",
+      "expr_len": 202,
+      "expression": "(((-13.848778145224)*e^(-0.03125(x+(19.74025974026))^2)+(4.713523833155)*e^(-0.03125(x+(1.688311688312))^2))+((1.521913669482)*e^(-0.03125(x-(1.922077922078))^2)+((0.344773740212)*x+(20.654522563929))))",
+      "cert": {
+        "outcome": "CERTIFIED",
+        "sigma": 4.0,
+        "ladder_depth": 0,
+        "branch_index": 0,
+        "branch_count": 1,
+        "branch_kind": "under",
+        "slack_total": 0.0,
+        "nonzero_weights": 3,
+        "emitted_length": 202,
+        "char_limit": 2000,
+        "milp_fired": false,
+        "solve_seconds": 0.22680570800002897,
+        "binding": "upper@u=33.58"
+      },
+      "seed": 2008,
+      "match": "solver vs straight"
+    },
+    {
+      "rung": "line",
+      "expr_len": 19,
+      "expression": "(-0.630885122411)*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    },
+    {
+      "rung": "SOLVER_FAILED",
+      "expr_len": 3,
+      "expression": "0*x",
+      "cert": null,
+      "seed": 2009,
+      "match": "straight vs solver"
+    }
+  ]
+}

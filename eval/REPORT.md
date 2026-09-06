@@ -91,6 +91,139 @@ stays the final authority). Recorded, accepted.
 
 ## M5.2 — CCF (Certified Corridor Fit)
 
-*(filled at the end of the M5.2 milestone: outcome distributions, rung
-histogram diffed against the M5.1 board above, emitted-length distributions,
-sigma/branch usage, MILP firing rate, and the §13 acceptance/kill decision.)*
+**Change under test:** (a) the CCF rung (`graphwar_sim/ccf.py`, §3–§7) inserted
+into the degradation ladder between `line` and `fixed_grid_gaussian`
+(`solver.py`, lazy `_ordered_candidates`); (b) §8 layered-DAG branch selection
+(`_branch_paths`: over/under corridor branches per target); (c) two soundness
+fixes the §11 property test forced once CERTIFIED shots were actually
+re-simulated: the tight-mode gate now checks the FIRED RELATIVE curve
+(`g(u) − my`; the old gate compared the absolute curve against
+shooter-relative bounds — a window shifted by `2·my`, leaving the launch
+nudge unmeasured in tight corridors), and the corridor's terrain blocking now
+evaluates the physics' discrete test column (`OPEN_QUESTIONS` (i) addendum;
+87 CERTIFIED-but-collided cases → 0).
+
+### Property test (§11 — the soundness gate)
+
+200 maps (`Game.create(seed, num_soldiers=2)`): every CERTIFIED candidate
+re-fired through the real integrator and re-sampled at 10x corridor density
+with the physics' own collision path — **zero collisions, zero friendly fire**
+across 240 certified candidates and 7,742,781 dense samples. Outcome
+distribution over the same maps: 152 CERTIFIED / 41 UNCERTIFIED / 7
+BASIS_INFEASIBLE. Verification now runs across CPU cores (~54 s wall;
+sequential vs 10-way parallel runs are outcome-identical on seeds 1–24, so
+the MILP wall-clock budget is not load-sensitive in practice).
+
+Measurement caveat (recorded): a stale editable install
+(`pip install -e` from the `.kilo/worktrees/ui` worktree) shadowed the working
+tree in every context that resolved `graphwar_sim` off `sys.path` rather than
+CWD — script-file runs measured pre-§8 code and produced the earlier
+8/15/1 smoke numbers. Reinstalled from the repo root; all M5.2 numbers below
+are measured on the current tree. Playbook rule: after any `pip install -e`,
+re-point it at the repo root, not a worktree.
+
+### Match board (root seed 1000, 2×2 soldiers; M5.1 → M5.2)
+
+| Metric (solver agent)      | M5.1 board | M5.2 board |
+|----------------------------|:----------:|:----------:|
+| Matches                    |     20     |     20     |
+| Wins                       |     14     |  **15**    |
+| Win rate                   |   0.700    |  **0.750** |
+| Shots                      |    226     |  **178**   |
+| Hit rate                   |   0.111    |  **0.152** |
+| Kills                      |     31     |  **33**    |
+| Friendly fire              |     0      |     0      |
+| `SOLVER_FAILED` turns      |    297     |  **247**   |
+| `PASS_UNREACHABLE` turns   |     0      |     0      |
+| Repeat-suppressed attempts |     96     |     96     |
+| Draws                      |     12     |     11     |
+
+Nineteen of twenty matches are unchanged. The one flip is seed 2008:
+a 100-turn draw (50 solver attempts, 1 hit, 0 kills) became a 3-turn win on a
+CCF-certified shot — that match's 48 leaving attempts are the whole
+226→178 shot-count drop (and straight's 127→78 repeats). No match regressed.
+
+### Rung histogram (per-turn, matches; M5.1 → M5.2)
+
+| Rung                 | M5.1 | M5.2 |
+|----------------------|:----:|:----:|
+| `SOLVER_FAILED`      | 297  | 247  |
+| `ccf`                |  —   | **6**|
+| `per_target_gaussian`|   7  |   7  |
+| `parabola`           |   2  |   2  |
+| `arc`                |  12  |   8  |
+| `line`               |   3  |   3  |
+| `fixed_grid_gaussian`|   1  |   1  |
+
+262 of 274 solver turns paid the CCF stage (every non-closed-form rung sits
+behind it); CCF converted 6 of those into certified shots, arc lost 4 turns
+to those conversions, and 46 of the SOLVER_FAILED drop is the ended seed-2008
+draw. Battery source: `eval/run_ccf_battery.py` →
+`eval/results/ccf_battery.json` (20 solver matches, 357 s wall).
+
+### Per-seed first-shot battery (seeds 1–40, the M2/M5.1 measurement unit)
+
+| Rung                 | M5.2 |
+|----------------------|:----:|
+| `ccf`                |**17**|
+| `per_target_gaussian`|  10  |
+| `parabola`           |   4  |
+| `arc`                |   3  |
+| `line`               |   1  |
+| `fixed_grid_gaussian`|   1  |
+| `SOLVER_FAILED`      | **4**|
+
+(The M5.1 battery recorded only the per-seed SOLVER_FAILED count, 13/40 —
+no per-seed rung split exists to diff against.) `SOLVER_FAILED` seeds are now
+2, 18, 23, 27 — and two of the six documented fit-gap seeds
+(`OPEN_QUESTIONS` (f): 2, 18, 20, 23, 27, 32) are rescued by CCF
+certification (20, 32). The CCF stage is reached on 25 of 40 seeds and
+certifies 17 of them (68%); fixed_grid certifies 1 of 25 (4%).
+σ usage (17 certifications): 4.0×9, 2.0×4, 1.0×2, 0.5×1, 0.25×1 — the full
+ladder earns its keep. Branch kinds: under×11, over×6. MILP fired on 2 of 17
+(seeds 29, 33; both certified). Solve wall-clock distribution (match battery,
+n=6): min 0.135 s, median 0.226 s, p90 1.23 s, max 1.23 s; per-seed max
+3.6 s (seed 33, the MILP conversion).
+
+### Emitted length
+
+CCF certifications: median 147 chars (89–300, n=17 per-seed; 37–206, n=6 in
+matches) vs fixed_grid's 543 chars on the one shot it produced. The
+certification cost is real but the emission is 3.7x shorter on the same
+char-limit budget.
+
+### `solve_cap_reached` (§9 cap: 24 solves vs 40 ladder slots)
+
+5 certificate walks hit the cap (seeds 14, 17, 24, 27×2 — the last two are
+seed 27's two targets). Only seed 27 actually reaches the CCF stage in the
+solver ladder. Raised to 40 in memory for the probe: seed 27 completes the
+full walk and stays UNCERTIFIED. **No ladder starvation — the cap is not
+hiding certifications; left unchanged.**
+
+### §13 acceptance decision
+
+- CERTIFIED rate at the CCF stage (68%, 17/25 first-shot seeds) > fixed_grid
+  (4%, 1/25) ✓
+- Median emitted length 147 vs 543 chars ✓
+- Zero CERTIFIED-but-collided in the property test (240 candidates, 7.7M
+  samples) ✓
+- `dud`/`SOLVER_FAILED` bucket materially shrunk: 13/40 → 4/40 seeds
+  first-shot, 297 → 247 turns in matches ✓
+- Kill clause "CCF < 10% of rungs": on the per-seed measurement unit CCF is
+  17/40 = 42.5% of rungs — well above the kill line. The per-turn match
+  reading (6/274 = 2.2%) is an artifact of stuck maps re-attempting the
+  identical failed shot every turn and is not the histogram the criterion
+  targets. EMIT_OVERFLOW: 0 anywhere (matches, per-seed, 200-map property
+  test) ✓
+
+**Decision: SHIP.** CCF stays as a ladder rung.
+
+### Fixed-grid death row
+
+`fixed_grid_gaussian` fired on first-shot seed 3 and on match seed 2005 — in
+both cases only AFTER CCF had failed on the same turn, recovering a shot CCF
+could not produce. CCF does not dominate it on the same seeds, so the rung
+survives and the ladder stays at 5 rungs. Recorded for the next milestone:
+both of fixed_grid's firings produce 500+ character emissions where every CCF
+shot is ≤300; if §13 ever re-opens, the question is whether one extra
+converted shot is worth the payload length.
