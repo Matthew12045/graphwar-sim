@@ -64,7 +64,9 @@ class Obstacle:
 
     def __post_init__(self) -> None:
         # Expose the Java name too, for call sites that mirror the source.
-        self.collidePoint = self.collide_point  # type: ignore[attr-defined]
+        # (Attribute is dynamically added; newer mypy accepts this without an
+        # ignore — retained here for older mypy and clarity.)
+        self.collidePoint = self.collide_point
 
 
 @dataclass

@@ -25,7 +25,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["graphwar_sim*"]
+include = ["graphwar_sim*", "agents*", "eval*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
