@@ -81,6 +81,16 @@ INITIAL_NUM_SOLDIERS: int = 2
 # Constants.java:46  (milliseconds; informational for a headless sim)
 TURN_TIME: int = 60000
 
+# --- CCF emission budget (M5.2) ---------------------------------------------
+# The reference imposes NO expression length limit: the input is a plain
+# JTextField with no DocumentFilter (GameScreen.java:101) and the function
+# travels URL-encoded over a line-based socket protocol (GameData.java:323)
+# with no length check anywhere (docs/OPEN_QUESTIONS.md (e)). This defensive
+# harness cap bounds the CCF rung's emitted string; the J_max emission budget
+# (graphwar_sim/ccf.py) is derived from it and its test reads it from here so
+# it breaks if the cap changes. # TUNABLE — not from source.
+MAX_EXPR_CHARS: int = 2000
+
 # --- Token type codes (drive operator precedence) ---------------------------
 # FunctionToken.java:22-39. The integer *value* is the precedence key: a lower
 # number is pulled out of a nest level first (see parser.reorder_rec).

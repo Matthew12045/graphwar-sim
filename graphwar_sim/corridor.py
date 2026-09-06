@@ -124,7 +124,7 @@ _MAX_BRANCHES: int = 8
 _TEAMMATE_RADIUS: float = config.PLANE_GAME_LENGTH * config.SOLDIER_RADIUS / config.PLANE_LENGTH
 # Teammate exclusion radius for the CCF cell envelope (world units): the
 # blast-radius-inflated disk of 5.2.md §5 (SOLDIER_RADIUS + EXPLOSION_RADIUS).
-_CCF_TEAMMATE_RADIUS: float = (
+CCF_TEAMMATE_RADIUS: float = (
     config.PLANE_GAME_LENGTH
     * (config.SOLDIER_RADIUS + config.EXPLOSION_RADIUS)
     / config.PLANE_LENGTH
@@ -260,7 +260,18 @@ def _column_free(
     circles: Sequence[tuple[int, int, int]],
     exclusions: Sequence[_Exclusion],
 ) -> list[tuple[float, float]]:
-    """The free set F_k at world column ``wx`` (see module docstring)."""
+    """The free set F_k at world column ``wx`` (see module docstring).
+
+    Crisp collision fidelity: the physics tests ``collide_point(int(x),
+    int(y))`` — a plane point in row ``py`` spans plane y ``[py, py+1)`` and
+    is blocked whenever ``py`` is a blocked ROW (``make_circle_obstacle``
+    blocks integer rows with ``(py - cy)^2 <= s^2``). The blocked world band
+    therefore covers the FULL pixel cells of rows ``[py_lo, py_hi]``, i.e.
+    ``[y(py_hi + 1), y(py_lo)]`` — not just up to ``y(py_hi)`` (the row's top
+    edge). Missing that last cell would admit trajectory points that collide
+    in the physics (fatal for a CERTIFICATE; the M5.1 sweep was only
+    optimistically-reachable there, oracle-guarded).
+    """
     px = plane_x_of(wx)
     if not (0 <= px < config.PLANE_LENGTH):
         return []  # out of bounds: collidePoint returns True (Obstacle.java:99-103)
@@ -276,7 +287,9 @@ def _column_free(
         # ceil(cy - s) .. floor(cy + s) (crisp model, inclusive).
         py_lo = math.ceil(cy - s)
         py_hi = math.floor(cy + s)
-        blo, bhi = world_y_range_for_plane_rows(py_lo, py_hi)
+        if py_hi < py_lo:
+            continue  # no integer row center inside the circle at this column
+        blo, bhi = world_y_range_for_plane_rows(py_lo, py_hi + 1)
         if bhi < y_min or blo > y_max:
             continue
         blocks.append((max(blo, y_min), min(bhi, y_max)))
@@ -315,13 +328,17 @@ def _cell_obstacle_band(
     r: int,
 ) -> tuple[float, float] | None:
     """World blocked band ``[lo, hi]`` of a circle over cell ``[wx_lo, wx_hi]``
-    — *exact* extrema, no sampling (5.2.md §5) — or None if the circle's pixel
-    x-range does not intersect the cell.
+    — *exact* extrema over the cell's blocked PIXEL CELLS (5.2.md §5), or None
+    if no pixel column of the cell is blocked.
 
-    The band half-height ``s = sqrt(r² - (px - cx)²)`` is maximized at the
-    pixel x closest to the centre, so ``band = [cy_w - s_max, cy_w + s_max]``
-    with ``s_max`` computed analytically from that closest point. The crisp
-    terrain model (``make_circle_obstacle``) matches this exactly.
+    The crisp model (``make_circle_obstacle``) blocks integer rows whose
+    CENTER is inside the circle, and the physics' ``int(y)`` extends each
+    blocked row to its full pixel cell. Over the cell, the per-column blocked
+    rows are ``[ceil(cy - s(x)), floor(cy + s(x))]`` with
+    ``s(x) = sqrt(r^2 - (x - cx)^2)`` maximized at the pixel x closest to the
+    centre, so the union over the cell is exactly
+    ``[ceil(cy - s_max), floor(cy + s_max)]`` and the world band covers those
+    rows' full cells: ``[y(floor(cy + s_max) + 1), y(ceil(cy - s_max))]``.
     """
     px_lo, px_hi = plane_x_of(wx_lo), plane_x_of(wx_hi)
     lo, hi = min(px_lo, px_hi), max(px_lo, px_hi)
@@ -329,21 +346,30 @@ def _cell_obstacle_band(
         return None
     d = 0.0 if lo <= cx <= hi else min(abs(cx - lo), abs(cx - hi))
     s_max = math.sqrt(max(0.0, r * r - d * d))
-    # s_max is in plane pixels; convert to world units to match cy_w.
-    s_max_world = s_max * config.PLANE_GAME_LENGTH / config.PLANE_LENGTH
-    cy_w = _circle_world_y(cy)
-    return (cy_w - s_max_world, cy_w + s_max_world)
+    py_lo = math.ceil(cy - s_max)
+    py_hi = math.floor(cy + s_max)
+    if py_hi < py_lo:
+        return None  # no integer row center inside the circle over the cell
+    return world_y_range_for_plane_rows(py_lo, py_hi + 1)
 
 
 def _side_at(band: tuple[float, float], blo: float, bhi: float) -> str | None:
     """Side of ``band`` relative to the branch interval ``[blo, bhi]``:
     ``"below"`` (band under the branch), ``"above"``, or None when the band
-    overlaps the branch (cannot happen for a valid chain)."""
+    strictly CONTAINS the branch (no single side remains). A PARTIAL overlap
+    (the band covers only the branch's top or bottom) still classifies: the
+    clear sub-interval determines the side the chord must take, which is the
+    classification the cell envelope needs (the sweep's branches hug obstacle
+    edges, so exact-adjacency and sliver overlaps are the common case)."""
     if band[1] <= blo:
-        return "below"
+        return "below"  # band entirely under the branch -> floor
     if band[0] >= bhi:
-        return "above"
-    return None
+        return "above"  # band entirely over the branch -> ceiling
+    if band[0] > blo and band[1] < bhi:
+        return None  # band strictly inside the branch: no single side
+    if band[0] > blo:
+        return "above"  # band covers the branch's top; the clear part is under it
+    return "below"  # band covers the branch's bottom; the clear part is over it
 
 
 def _combine_sides(a: str | None, b: str | None) -> str | None:
@@ -415,19 +441,21 @@ def cell_conservative_bounds(
     return (lcell, hcell)
 
 
-def chain_cell_bounds(
+def chain_cells(
     chain: Chain,
     mx: float,
     circles: Sequence[tuple[int, int, int]],
     exclusions: Sequence[_Exclusion],
     du: float = _DU,
 ) -> tuple[tuple[float, ...], tuple[float, ...]] | None:
-    """Per-sample cell-wise corridor bounds from an M5.1 chain (5.2.md §5):
-    ``L_k = max(Lcell_{k-1}, Lcell_k)``, ``H_k = min(Hcell_{k-1}, Hcell_k)``
-    (endpoints use their single adjacent cell). None if any cell envelope is
-    empty (the chain does not survive the cell-wise sharpening).
+    """Per-CELL conservative envelopes ``([Lcell...], [Hcell...])`` of an M5.1
+    chain (5.2.md §5), exact obstacle extrema per cell. Cell ``k`` spans
+    ``[mx + k*du, mx + (k+1)*du]``. None if any cell envelope is empty (the
+    chain does not survive the cell-wise sharpening).
+
+    A single-sample chain (``len(chain.L) == 1``) degenerates to one cell.
     """
-    L, H = list(chain.L), list(chain.H)
+    L, H = chain.L, chain.H
     n = len(L)
     if n == 1:
         return ((L[0],), (H[0],))
@@ -446,17 +474,57 @@ def chain_cell_bounds(
         if env is None:
             return None
         cells.append(env)
-    out_l: list[float] = [cells[0][0]]
-    out_h: list[float] = [cells[0][1]]
+    return (tuple(c[0] for c in cells), tuple(c[1] for c in cells))
+
+
+def chain_cell_bounds(
+    chain: Chain,
+    mx: float,
+    circles: Sequence[tuple[int, int, int]],
+    exclusions: Sequence[_Exclusion],
+    du: float = _DU,
+) -> tuple[tuple[float, ...], tuple[float, ...]] | None:
+    """Per-sample cell-wise corridor bounds from an M5.1 chain (5.2.md §5):
+    ``L_k = max(Lcell_{k-1}, Lcell_k)``, ``H_k = min(Hcell_{k-1}, Hcell_k)``
+    (endpoints use their single adjacent cell). None if any cell envelope is
+    empty (the chain does not survive the cell-wise sharpening).
+    """
+    cells = chain_cells(chain, mx, circles, exclusions, du)
+    if cells is None:
+        return None
+    Lcells, Hcells = cells
+    n = len(chain.L)
+    if n == 1:
+        return ((Lcells[0],), (Hcells[0],))
+    out_l: list[float] = [Lcells[0]]
+    out_h: list[float] = [Hcells[0]]
     for k in range(1, n - 1):
-        out_l.append(max(cells[k - 1][0], cells[k][0]))
-        out_h.append(min(cells[k - 1][1], cells[k][1]))
-    out_l.append(cells[-1][0])
-    out_h.append(cells[-1][1])
+        out_l.append(max(Lcells[k - 1], Lcells[k]))
+        out_h.append(min(Hcells[k - 1], Hcells[k]))
+    out_l.append(Lcells[-1])
+    out_h.append(Hcells[-1])
     return (tuple(out_l), tuple(out_h))
 
 
 # --- The M5.1 sweep ----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ShooterFrame:
+    """The shooter-facing world frame for one turn (see :func:`shooter_frame`).
+
+    ``targets`` are alive enemies (all with ``x > mx`` in this frame);
+    ``teammates`` are alive same-side soldiers excluding the shooter;
+    ``circles`` are terrain circles in plane pixel coords (the mirror, if any,
+    is applied inside the sweep).
+    """
+
+    mx: float
+    my: float
+    targets: tuple[tuple[float, float], ...]
+    teammates: tuple[tuple[float, float], ...]
+    circles: tuple[tuple[int, int, int], ...]
+    inverted: bool
 
 
 @dataclass(frozen=True)
@@ -638,11 +706,11 @@ def sweep_targets(
     ]
 
 
-def reachability(game: Game) -> list[TargetReachability]:
-    """Corridor sweep for the current turn of a :class:`~graphwar_sim.state.Game`.
-
-    Builds the shooter-facing frame exactly like ``solver._build_frame``
-    (mirror + plane->world transform) and runs :func:`sweep_targets`.
+def shooter_frame(game: Game) -> ShooterFrame:
+    """Build the shooter-facing world frame for the current turn of a
+    :class:`~graphwar_sim.state.Game` (mirror + plane->world transform, exactly
+    like ``solver._build_frame``). Shared by :func:`reachability`, the M5.2 CCF
+    (``graphwar_sim/ccf.py``), and the test harnesses.
     """
     team = game.state.current_team()
     inverted = team.team == config.TEAM2
@@ -669,19 +737,41 @@ def reachability(game: Game) -> list[TargetReachability]:
                     teammates.append((wx, wy))
             else:
                 targets.append((wx, wy))
-    circles: Sequence[tuple[int, int, int]] = getattr(game, "circles", ())
-    return sweep_targets(mx, my, targets, teammates, circles, inverted)
+    return ShooterFrame(
+        mx=mx,
+        my=my,
+        targets=tuple(targets),
+        teammates=tuple(teammates),
+        circles=tuple(getattr(game, "circles", ())),
+        inverted=inverted,
+    )
+
+
+def reachability(game: Game) -> list[TargetReachability]:
+    """Corridor sweep for the current turn of a :class:`~graphwar_sim.state.Game`.
+
+    Builds the shooter-facing frame via :func:`shooter_frame` and runs
+    :func:`sweep_targets`.
+    """
+    fr = shooter_frame(game)
+    return sweep_targets(
+        fr.mx, fr.my, fr.targets, fr.teammates, fr.circles, fr.inverted
+    )
 
 
 __all__ = [
+    "CCF_TEAMMATE_RADIUS",
     "Chain",
+    "ShooterFrame",
     "TargetReachability",
     "WORLD_RADIUS",
     "build_exclusions",
     "cell_conservative_bounds",
     "chain_cell_bounds",
+    "chain_cells",
     "map_y_bounds",
     "reachability",
+    "shooter_frame",
     "sweep_target",
     "sweep_targets",
 ]

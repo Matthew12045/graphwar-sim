@@ -74,6 +74,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from . import config
+from .emission import format_literal as _num
+from .emission import gauss_term as _gauss_term
 from .parser import MalformedFunction, PolishNotationFunction
 from .physics import ShotResult, Soldier, process_function_range
 from .state import Game
@@ -183,30 +185,11 @@ def _build_frame(game: Game) -> _Frame:
     )
 
 
-# --- Emission (validated sign-folding; see tests/test_solver.py) ------------
-
-
-def _num(v: float) -> str:
-    """Format a numeric literal as plain decimal, never scientific notation.
-
-    The parser rewrites every ``-`` to ``+-`` (unary negation), so a literal
-    such as ``1e-06`` would become ``1e+-06`` and misparse as ``1*e - 6``.
-    We therefore never emit an exponent. Twelve decimal places round-trip a
-    double far inside the ~1e-9 tolerance the round-trip test asserts.
-    """
-    s = f"{v:.12f}".rstrip("0").rstrip(".")
-    return "0" if s in ("", "-0") else s
-
-
-def _gauss_term(w: float, c: float, b: float) -> str:
-    """Emit one Gaussian term, folding the centre's sign into the operator.
-
-    The parser rewrites every ``-`` to ``+-`` (unary negation), so a negative
-    centre inside ``x - c`` would double-negate. We emit ``x+(|c|)`` for a
-    negative centre instead. Validated against the real parser to ~1e-16.
-    """
-    center = f"x-({_num(c)})" if c >= 0 else f"x+({_num(-c)})"
-    return f"({_num(w)})*e^(-{_num(b)}({center})^2)"
+# --- Emission ---------------------------------------------------------------
+# The plain-decimal formatter and the Gaussian term emitter moved to
+# :mod:`graphwar_sim.emission` (M5.2: the CCF rung shares them; the module is
+# the single source of truth, validated by tests/test_emission.py). The names
+# stay importable here for the M2 round-trip tests.
 
 
 def _gauss_expression(weights: np.ndarray, centers: np.ndarray, b: float) -> str:

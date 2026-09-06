@@ -186,9 +186,18 @@ def test_inverted_geometry_mirrors_terrain() -> None:
 def test_cell_wise_envelope_catches_a_synthetic_spike() -> None:
     """At a coarse du a pointwise corridor sees free columns on both sides of
     a small circle, but the cell-wise envelope must catch the circle rising
-    between the samples. This test fails against a pointwise-only
-    implementation (5.2.md §11)."""
-    circles = [(300, 225, 3)]  # tiny 3px circle (world r ~ 0.195)
+    between the samples: the floor at the spike's cells rises above the
+    spike's extremal top (forcing the certified curve over it). This test
+    fails against a pointwise-only implementation, whose per-sample bounds
+    stay at the full band (5.2.md §11).
+
+    Semantics note: with the partial-overlap classification (corridor.py), a
+    spiky cell is caught as a FLOOR/CEILING raise — the branch narrows and a
+    certified over/under path may exist — not necessarily as a dead chain. A
+    spike that cannot be avoided at all is the full-wall case, asserted dead
+    in test_cell_envelope_empty_when_obstacle_blocks_every_chord.
+    """
+    circles = [(300, 225, 3)]  # tiny 3px circle (world r ~ 0.195) at world x ~ -5.52
     targets = [(15.0, 0.0)]
     teammates: list[tuple[float, float]] = []
     mx, my = -20.0, 0.0
@@ -199,7 +208,17 @@ def test_cell_wise_envelope_catches_a_synthetic_spike() -> None:
     )
     assert r.reachable, "pointwise sweep must see the columns free"
     bounds = _cell_du_bounds(mx, my, targets, teammates, circles, du)
-    assert bounds is None, "cell-wise envelope must reject the spike"
+    assert bounds is not None
+    L, H = bounds
+    # The spike (px 297..303) intersects the cells covering world x in
+    # [-5.72, -5.45]; their floor must rise above the circle's extremal top
+    # (world y +0.259 = row 222 top edge) — the pointwise view admitted y=0.
+    affected = [k for k in range(len(L)) if abs(-20.0 + k * du - (-5.52)) <= du]
+    assert affected, "expected the spike's cells to be sampled"
+    for k in affected:
+        assert L[k] > 0.15, f"cell {k}: floor {L[k]} did not rise above the spike"
+    # Far from the spike the envelope stays at the full band.
+    assert L[0] < -10.0 and H[0] > 10.0
 
 
 def test_cell_wise_envelope_matches_pointwise_on_clean_field() -> None:
