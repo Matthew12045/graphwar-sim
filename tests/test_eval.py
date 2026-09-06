@@ -14,6 +14,9 @@ M3 parse-failure / retry logging.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from agents import AgentStats, RandomAgent, SolverAgent, StraightShotAgent
 from eval.runner import (
@@ -343,6 +346,74 @@ def test_reproducible_from_seed_file(tmp_path: Path) -> None:
 
 
 # --- Leaderboard document ----------------------------------------------------
+
+
+# --- M5.4: llm:<model> roster registration -----------------------------------
+
+
+def test_make_agent_factory_entries_unchanged() -> None:
+    """The exact-string factory path still builds the M3 roster agents."""
+    from eval.runner import make_agent
+
+    assert isinstance(make_agent("solver", 1), SolverAgent)
+    assert isinstance(make_agent("random", 3), RandomAgent)
+    assert isinstance(make_agent("straight", 1), StraightShotAgent)
+
+
+def test_make_agent_llm_roster_entry_runs_network_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``llm:<model>`` roster entries construct an LLMAgent (name
+    ``llm:<model>``); with a fake client injected via the ``_build_client``
+    seam, ``play_match`` runs it vs the solver end to end with zero network,
+    and the match stats are keyed by the full ``llm:<model>`` name."""
+    from agents import LLMAgent
+    from agents import llm_agent as llm_agent_module
+    from eval.runner import make_agent
+
+    class _TextBlock:
+        def __init__(self) -> None:
+            self.type = "text"
+            self.text = "0.05*x"
+
+    class _FakeResponse:
+        def __init__(self) -> None:
+            self.stop_reason = "end_turn"
+            self.content = [_TextBlock()]
+
+    class _FakeMessages:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def create(self, **kwargs: Any) -> _FakeResponse:
+            self.calls.append(kwargs)
+            return _FakeResponse()
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.messages = _FakeMessages()
+
+    fake = _FakeClient()
+    monkeypatch.setattr(llm_agent_module, "_build_client", lambda: fake)
+
+    agent = make_agent("llm:fake-model", 5)
+    assert isinstance(agent, LLMAgent)
+    assert agent.name == "llm:fake-model"
+
+    result = play_match(7, agent, SolverAgent(), _small_config())
+    assert "llm:fake-model" in result.stats
+    assert result.stats["llm:fake-model"].shots > 0
+    assert fake.messages.calls  # the LLM was actually consulted every turn
+
+
+def test_make_agent_unknown_roster_name_raises() -> None:
+    from eval.runner import make_agent
+
+    with pytest.raises(ValueError, match="unknown agent in roster: nope"):
+        make_agent("nope", 1)
+
+
+# --- M5.1 taxonomy: outcomes, dedupe, stalemate ------------------------------
 
 
 def test_leaderboard_document_has_expected_sections(tmp_path: Path) -> None:

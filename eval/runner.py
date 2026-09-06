@@ -27,6 +27,7 @@ from typing import Any, cast
 from agents import (
     Agent,
     AgentStats,
+    LLMAgent,
     RandomAgent,
     SolverAgent,
     StraightShotAgent,
@@ -334,14 +335,28 @@ def _classify(
     return ShotOutcome.HIT if enemy_hits else ShotOutcome.MISS
 
 
+def make_agent(name: str, seed: int) -> Agent:
+    """Build one fresh agent instance from a roster entry.
+
+    Exact-string factory lookup first (``_AGENT_FACTORIES``); otherwise an
+    ``"llm:<model>"`` entry constructs :class:`~agents.llm_agent.LLMAgent`
+    with ``model=<rest>`` (the part after the FIRST colon; ``seed`` is unused
+    — LLM agents are deterministic given the model). The ``llm:`` prefix is
+    opt-in: ``DEFAULT_ROSTER`` stays network-free, and a ``llm:`` entry
+    raises at construction when no auth env var is set (fail fast, never
+    mid-match). Unknown names raise ``ValueError``.
+    """
+    factory = _AGENT_FACTORIES.get(name)
+    if factory is not None:
+        return factory(seed)
+    if name.startswith("llm:"):
+        return LLMAgent(model=name.split(":", 1)[1])
+    raise ValueError(f"unknown agent in roster: {name}")
+
+
 def _make_agents(name_a: str, name_b: str, seed: int) -> tuple[Agent, Agent]:
     """Fresh, match-seeded agent instances (random baselines reproducible)."""
-    try:
-        factory_a = _AGENT_FACTORIES[name_a]
-        factory_b = _AGENT_FACTORIES[name_b]
-    except KeyError as exc:
-        raise ValueError(f"unknown agent in roster: {exc}") from exc
-    return factory_a(seed), factory_b(seed)
+    return make_agent(name_a, seed), make_agent(name_b, seed)
 
 
 # --- Leaderboard run ---------------------------------------------------------
@@ -634,6 +649,7 @@ __all__ = [
     "PlannedMatch",
     "ShotRecord",
     "build_plan",
+    "make_agent",
     "play_match",
     "run_from_seed_file",
     "run_leaderboard",
