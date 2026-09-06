@@ -406,12 +406,63 @@ match again. (Behavior change from M5.2, intended and documented: the
 occur for any input, since the cap rejects depth before the recursion can
 blow.)
 
+## M5.3: agent budgets — the cost-accounting definition
+
+This resolves the "Genuinely open — token-cost / ablation metrics (M4)" item
+below: the accounting method is now defined; the ablation grid is the planned
+M5.4/M5.5 protocol (not run in M5.3 — no simulate-consuming agent exists; the
+M3 minimal slice skipped LLMAgent/HybridAgent).
+
+**Units.**
+
+- *LLM tokens*: prompt + completion, counted at the model client boundary —
+  only when a model client exists (M5.4/M5.5). M5.3 has none; nothing to
+  count.
+- *Simulate calls*: 1 per **delegated** call
+  (`agents/simulate_budget.BudgetedSimulator.simulate`); an over-budget call
+  is refused (raises `SimulateBudgetExhausted` without delegating) and
+  counted **separately** as denied. Both accumulate in
+  `agents.base.AgentStats.simulate_calls` / `.simulate_denied`, which the
+  runner merges into `AgentMatchStats` per match.
+- *CCF cost*: the existing §12 instrumentation — `solve_seconds` and
+  `milp_fired` on `CCFCertificate` (unchanged).
+
+**Granularity.** Per turn, as recorded in the wrapper's `turn_log`
+(`{"turn", "calls", "denied"}` per turn; the ledger of
+`BudgetedSimulator`). Per-match aggregation is the runner's `AgentMatchStats`
+merge.
+
+**Aggregation.** Distributions, not means (the 5.2.md §12 rule): report
+per-turn histograms of calls/denials, never a single average.
+
+**Ablation grid (planned protocol — M5.4/M5.5, not run in M5.3).** Simulate
+budget N ∈ {0, 3, 10} × ASCII board on/off, on the seeded round-robin
+roster; outcome + accounting distributions per cell. `DEFAULT_SIMULATE_BUDGET
+= 3` (`# TUNABLE`) sits mid-grid. Determinism is structural: the budget is a
+call count, so any (seed, N) cell replays exactly.
+
+**Review notes — the four root-level sketch files** (`1._Ladder_dispatch*` ×2,
+`2._Property-test_scaffolding*` ×2, committed with this milestone for the
+record). They use hypothetical APIs that do not exist
+(`graphwar.ccf.fit`, `Corridor(xs, lo, hi)`) and are NOT implementable code:
+
+- *Ladder dispatch refactor*: REJECTED. It conflicts with the shipped,
+  measured M5.2 `_ordered_candidates` design and re-opens the §13 SHIP
+  decision for no measured gain.
+- *P1 (property scaffolding) / P3*: already covered —
+  `tests/test_ccf_property.py` (bit-parallel, 200 maps) and the seeds-1–24
+  sequential-vs-parallel outcome-identity check performed during M5.2.
+- *P2 (widening monotone) and P4 (degenerate reject)*: recorded as M5.4/M5.5
+  property-test candidates, not implemented now.
+- *The `cost` accounting hook* the sketches propose: satisfied by the
+  accounting definition above (no new `CertifiedFit.cost` field).
+
 ## Genuinely open (deferred to later milestones)
 
-- **Token-cost / ablation metrics (M4).** The minimal viable slice skips
-  token-cost tracking and ablations. If added later, the LLM agent's prompt
-  budget and the cost of `simulate_tool` calls will need a defined accounting
-  method. Deferred by the plan, not a source question.
+- ~~**Token-cost / ablation metrics (M4).**~~ **RESOLVED in M5.3** — the
+  accounting method is defined above ("M5.3: agent budgets"); the ablation
+  grid runs in M5.4/M5.5 when a simulate-consuming agent exists. Deferred by
+  the plan, not a source question.
 - **Determinism of the RNG across JVM/Python.** The server uses
   `java.util.Random`/`nextGaussian`. For reproducible golden tests we seed a
   Python `random.Random`; the *distribution* must match, but exact

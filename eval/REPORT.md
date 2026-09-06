@@ -227,3 +227,69 @@ survives and the ladder stays at 5 rungs. Recorded for the next milestone:
 both of fixed_grid's firings produce 500+ character emissions where every CCF
 shot is ≤300; if §13 ever re-opens, the question is whether one extra
 converted shot is worth the payload length.
+
+## M5.3 — agent budgets (AST depth cap + simulate budget + accounting seams)
+
+What shipped — three seams, zero behavioral change to any measured surface:
+
+1. **AST depth cap** (`config.MAX_AST_DEPTH = 64`, `# TUNABLE`): the parser
+   now rejects expressions whose evaluation tree exceeds 64 levels —
+   `_reorder_rec` raises `MalformedFunction` past the recursion cap, and
+   `PolishNotationFunction.__init__` computes the prefix list's tree depth
+   iteratively (explicit stack) and rejects past the cap. Before this, a
+   1000-term chain `1+1+…+1` (1999 chars, INSIDE `MAX_EXPR_CHARS`) raised
+   `RecursionError` in `_reorder_rec` (probe: 990 terms parse, 1000 die at
+   Python's 1000-frame limit), which sailed past every
+   `except MalformedFunction` — `Game.fire` (state.py:242 is unguarded), the
+   match runner, the UI server — and killed the match/page. Depth is the
+   same missing-limit family as the char limit (OPEN_QUESTIONS (e), (k);
+   the JVM dies with StackOverflowError on the same input). The guard
+   inherits into every consumer at once: `Game.fire`, `agents.simulate_tool`,
+   `solver._verify`, `ccf._fired_curve`, the UI server. Deep input is now a
+   classified `PARSE_ERROR` turn (safe dud fired), a UI 400, and an oracle
+   `error="MalformedFunction"` — never a crash. Behavior at depth ≤ 64 is
+   unchanged; full-suite green and the M5.2 battery numbers below are
+   reproduced unchanged (checked at close via the scratch `--out` rerun from
+   `seeds.json`).
+2. **Simulate budget wrapper** (`agents/simulate_budget.py`):
+   `BudgetedSimulator` wraps the byte-identical pure oracle
+   (`agents/simulate_tool.py` untouched — M5.4.2 depends on it). Per-turn
+   count budget (default 3, `# TUNABLE`, mid-grid of the planned ablation),
+   budget check FIRST, denied calls recorded without delegating, delegated
+   calls count regardless of parseability, `new_turn()` ledger
+   (`{"turn", "calls", "denied"}`), `remaining` for the M5.5.6 feedback
+   format. Count-based only: NO wall-clock budget anywhere in M5.3.
+3. **Accounting seams**: `AgentStats`/`AgentMatchStats` gain
+   `simulate_calls`/`simulate_denied` (defaults 0; merged by the runner's
+   existing `internal:` block). The accounting definition (units, per-turn
+   granularity, distributions-not-means aggregation) is recorded in
+   `docs/OPEN_QUESTIONS.md` ("M5.3: agent budgets"), resolving the
+   "Genuinely open" token-cost item.
+
+### Determinism / outcome-neutrality
+
+- The budget is a call COUNT, so determinism holds by construction; the
+  wrapper's ledger is a pure function of the (game, call-sequence) — tested.
+- The depth cap is outcome-neutral at the shipped value: every expression the
+  ladder emits parses at depth ≤ 16 (CCF peak ≈ 9 = ceil(log2 J_max) + 3,
+  J_max = 55), asserted per rung on the M5.2 per-seed battery rungs
+  (`tests/test_ccf.py`), and the `emission_budget` now reads BOTH limits
+  (char 2000 binds; depth dimension admits J ≤ 2^61).
+- **M5.2 battery numbers unchanged** — the close-out rerun
+  (`python3 -m eval --from-seeds eval/results/seeds.json --out <scratch>`)
+  reproduces the M5.2 section's match board and rung histogram exactly (15
+  wins / 0.750, 178 shots, 247 SOLVER_FAILED, ccf=6, arc=8, the seed-2008
+  3-turn flip), so the depth cap is outcome-neutral. The committed
+  `eval/results/leaderboard.md` artifact was NOT regenerated (it is the
+  M5.1-era baseline, pre-dating M5.2's solver changes — unchanged by M5.3),
+  and the byte-parity leaderboard test stays green WITHOUT any artifact
+  regeneration.
+
+### Deliberately not run in M5.3
+
+The simulate-budget ablation grid (N ∈ {0, 3, 10} × ASCII on/off): no
+simulate-consuming agent exists (M3 skipped LLMAgent/HybridAgent), so every
+wrapper integration number would be synthetic. The grid is the planned
+M5.4/M5.5 protocol (OPEN_QUESTIONS, "M5.3: agent budgets"); the wrapper is
+its infrastructure, with the `new_turn()` consuming-loop contract documented
+in the class docstring.
