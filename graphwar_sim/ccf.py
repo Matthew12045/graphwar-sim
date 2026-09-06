@@ -653,6 +653,12 @@ def _fired_curve(expression: str, mx: float, my: float) -> Callable[[float], flo
     using the REAL launch-angle fixed point on the REAL parsed expression —
     the nudge, the auto vertical offset, everything the game does — with ``u``
     sampled on the caller's grid instead of the integrator's.
+
+    The curve is ABSOLUTE (world ``y`` = ``f_ccf(u) + my + delta``).  Its
+    certificate consumer, the tight-mode posthoc gate, therefore compares
+    ``g(u) - my`` — the FIRED RELATIVE curve ``f_ccf(u) + delta`` — against the
+    SHOOTER-RELATIVE corridor bounds ``Lrel``/``Hrel``; the world-frame value
+    is what the physics property test plots against terrain.
     """
     try:
         fn = PolishNotationFunction(expression)
@@ -675,10 +681,16 @@ def _posthoc_gate(
     exempt: np.ndarray,
     m_prime: float,
 ) -> tuple[bool, str | None]:
-    """Tight-mode certificate gate: the MEASURED fired curve at every corridor
-    boundary sample must satisfy the margin rows; the chord bound (``g'' =
-    f''``, ``|g - chord| <= M du^2 / 8``) covers the continuous curve between
-    samples. Returns ``(ok, binding)``."""
+    """Tight-mode certificate gate: the MEASURED FIRED RELATIVE curve at every
+    corridor boundary sample must satisfy the margin rows; the chord bound
+    (``g'' = f''``, ``|g - chord| <= M du^2 / 8``) covers the continuous curve
+    between samples. Returns ``(ok, binding)``.
+
+    Frame contract: ``g`` is the fired curve in the SHOOTER-RELATIVE frame —
+    ``g(u) = f_ccf(u) + delta`` — and ``Lrel``/``Hrel`` are the same-frame
+    corridor bounds.  ``_finalize_solution`` passes ``g_abs(u) - my`` where
+    ``g_abs = _fired_curve(...)`` is the world-frame curve, so the gate
+    verifies the fired RELATIVE curve against the RELATIVE bounds."""
     worst = -math.inf
     binding: str | None = None
     for k_idx in np.nonzero(~exempt)[0]:
@@ -1123,7 +1135,7 @@ def _finalize_solution(
         if g is None:
             return _Finalized(None, len(expr), milp_fired, "unparseable")
         m_prime = (_DU * _DU / (8.0 * sigma * sigma) + _TAIL) * float(np.sum(np.abs(w)))
-        gate_ok, binding = _posthoc_gate(g, us, Lrel, Hrel, exempt, m_prime)
+        gate_ok, binding = _posthoc_gate(lambda u: g(u) - my, us, Lrel, Hrel, exempt, m_prime)
         if not gate_ok:
             return _Finalized(None, len(expr), milp_fired, binding)
     else:

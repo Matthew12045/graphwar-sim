@@ -43,17 +43,19 @@ would halve ``du``; here every rung yields a finite bound.
 Degradation ladder (rung recorded on the result; a Phase 4 metric)
 ------------------------------------------------------------------
 The multi-target Gaussian rungs lead (the plan's intended primary basis, and
-the only rung that can multi-kill); the fixed-grid rung sits low because it
-underperforms the others on the seeded battery and is the only one that
-produced friendly fire (see ``docs/OPEN_QUESTIONS.md`` for the recorded
-divergence from the plan's fixed-grid-primary ordering):
+the only rung that can multi-kill). Per 5.2.md §1 the M5.2 CCF rung sits
+between the closed-form rungs and the fixed-grid rung, which is on death row —
+it exists only until CCF beats it on the same seeds. The ``ccf`` rung's
+certified-scipy LPs run lazily, only when reached (the ladder is a generator):
 
 1. ``per_target_gaussian`` — one Gaussian centre per enemy, several widths.
 2. ``parabola`` / ``line`` — closed-form single-target curves (auto-offset
    baked in).
-3. ``fixed_grid_gaussian`` — a fixed uniform grid of centres (the plan's named
-   primary; it underperforms on the seeded maps — the documented divergence).
-4. ``dud`` — a deliberate safe dud that hits nothing (never crashes).
+3. ``ccf`` — certified corridor fit (5.2.md §1; ``graphwar_sim/ccf.py``).
+4. ``fixed_grid_gaussian`` — a fixed uniform grid of centres (the plan's named
+   primary; it underperforms on the seeded maps — the documented divergence,
+   and on death row behind CCF).
+5. ``dud`` — a deliberate safe dud that hits nothing (never crashes).
 
 Emission note: numeric literals are emitted as plain decimals (``_num``),
 never scientific notation — the parser's ``-``→``+-`` rewrite would corrupt
@@ -68,8 +70,9 @@ expressions are built from literals and parsed by the faithful
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -79,6 +82,9 @@ from .emission import gauss_term as _gauss_term
 from .parser import MalformedFunction, PolishNotationFunction
 from .physics import ShotResult, Soldier, process_function_range
 from .state import Game
+
+if TYPE_CHECKING:
+    from .ccf import CCFCertificate
 
 # --- Tunable solver parameters (NOT from the reference source) --------------
 # Gaussian width (curvature) of the primary basis. # TUNABLE — chosen by the
@@ -102,6 +108,8 @@ RUNG_PER_TARGET = "per_target_gaussian"
 RUNG_FIXED_GRID = "fixed_grid_gaussian"
 RUNG_LINE = "line"
 RUNG_PARABOLA = "parabola"
+# 5.2.md §1 ladder placement: CCF sits between line and fixed_grid_gaussian.
+RUNG_CCF = "ccf"
 RUNG_ARC = "arc"
 # M5.1: the corridor pre-check proved no monotone-x trajectory can reach any
 # enemy (PASS_UNREACHABLE) vs. a reachable target the ladder failed to convert
@@ -118,21 +126,29 @@ class SolverResult:
     - ``rung``: which degradation rung produced it (a Phase 4 metric).
     - ``bound``: the certification bound ``M · du² / 8`` (finite for every rung).
     - ``notes``: free-form diagnostics (e.g. self-verification hit summary).
+    - ``cert``: the CCF certificate when the CCF rung produced the expression,
+      else ``None``.
     """
 
     expression: str
     rung: str
     bound: float
     notes: str = ""
+    cert: CCFCertificate | None = None
 
 
 @dataclass
 class _Candidate:
-    """An internal candidate: an emitted expression plus its certification data."""
+    """An internal candidate: an emitted expression plus its certification data.
+
+    ``cert`` is the CCF certificate (when this candidate came from the CCF
+    rung), else ``None``.
+    """
 
     expression: str
     rung: str
     m_bound: float  # bound on |f''| (world units); 0 for an exact line
+    cert: CCFCertificate | None = None
 
 
 # --- Frame transforms (mirror physics.py exactly) ---------------------------
@@ -161,18 +177,32 @@ class _Frame:
     shooter: Soldier
     enemies: list[Soldier]
     inverted: bool
+    circles: tuple[tuple[int, int, int], ...]  # terrain circles in plane px
+    teammates: list[tuple[float, float]]  # alive same-side soldiers excl. shooter
 
 
 def _build_frame(game: Game) -> _Frame:
-    """Assemble the shooter-facing world frame (muzzle + live enemies)."""
+    """Assemble the shooter-facing world frame (muzzle + live enemies).
+
+    Teammates (alive same-side soldiers excluding the shooter) are gathered
+    through the SAME ``_plane_to_world`` transform as enemies, in the
+    shooter-facing world frame, alongside the raw terrain circles in plane
+    pixel coords (both feed the CCF rung, mirroring
+    ``corridor.shooter_frame``).
+    """
     team = game.state.current_team()
     shooter = team.current_soldier()
     inverted = team.team == config.TEAM2
     mx, my = _plane_to_world(shooter.x, shooter.y, inverted)
     targets: list[tuple[float, float]] = []
     enemies: list[Soldier] = []
+    teammates: list[tuple[float, float]] = []
     for t in game.state.teams:
         if t.team == team.team:
+            for s in t.soldiers:
+                if not s.alive or s is shooter:
+                    continue
+                teammates.append(_plane_to_world(s.x, s.y, inverted))
             continue  # own side (teammates) — never a target
         for s in t.soldiers:
             if not s.alive:
@@ -181,7 +211,14 @@ def _build_frame(game: Game) -> _Frame:
             targets.append((ex, ey))
             enemies.append(s)
     return _Frame(
-        mx=mx, my=my, targets=targets, shooter=shooter, enemies=enemies, inverted=inverted
+        mx=mx,
+        my=my,
+        targets=targets,
+        shooter=shooter,
+        enemies=enemies,
+        inverted=inverted,
+        circles=tuple(getattr(game, "circles", ())),
+        teammates=teammates,
     )
 
 
@@ -342,6 +379,25 @@ def _arc_grid() -> list[float]:
     return [_ARC_A_MIN + i * _ARC_A_STEP for i in range(n + 1)]
 
 
+def _ccf_candidates(frame: _Frame) -> list[_Candidate]:
+    """CCF rung candidates (5.2.md §1/§6-§9): certified-corridor-fit shots."""
+    from . import ccf  # local import: scipy is heavy and CCF fires mid-ladder only
+
+    result = ccf.solve_for_frame(
+        frame.mx, frame.my, frame.targets, frame.teammates, frame.circles, frame.inverted
+    )
+    certs = {c.target_index: c for c in result.certificates}
+    return [
+        _Candidate(
+            expression=c.expression,
+            rung=RUNG_CCF,
+            m_bound=c.m_bound,
+            cert=certs.get(c.target_index),
+        )
+        for c in result.candidates
+    ]
+
+
 def _dud_candidates() -> list[_Candidate]:
     """Safe fall-back expressions: a flat line at muzzle height (M5.1: emitted
     only as a PASS_UNREACHABLE / SOLVER_FAILED placeholder, never as a rung).
@@ -353,36 +409,47 @@ def _dud_candidates() -> list[_Candidate]:
     return [_Candidate(expression="0*x", rung=RUNG_PASS_UNREACHABLE, m_bound=0.0)]
 
 
-def _ordered_candidates(frame: _Frame) -> list[_Candidate]:
+def _ordered_candidates(frame: _Frame) -> Iterator[_Candidate]:
     """The degradation ladder, best first; ``None`` entries dropped.
 
-    The multi-target Gaussian rungs lead (the plan's intended primary basis,
-    and the only rung that can multi-kill): per-target-centre Gaussians first,
-    then the closed-form single-target rungs (parabola, line), then the plan's
-    named fixed-grid basis, and finally the terrain-aware arc sweep. The
-    fixed-grid rung is kept low — and below the closed-form rungs — because on
-    the seeded battery its isolated hit rate trails the others and it is the
-    only rung that produced friendly fire (see ``docs/OPEN_QUESTIONS.md`` for
-    the recorded divergence from the plan's fixed-grid-primary ordering).
+    Ladder order per 5.2.md §1: ``per_target_gaussian`` (×``_B_WIDTHS``) ->
+    ``parabola`` -> ``line`` -> ``ccf`` -> ``fixed_grid_gaussian`` ->
+    ``arc``. The multi-target Gaussian rungs lead (the plan's intended primary
+    basis, and the only rung that can multi-kill), then the closed-form
+    single-target rungs, then the M5.2 CCF rung, then the plan's named
+    fixed-grid basis, and finally the terrain-aware arc sweep.
 
-    There is no ``dud`` rung in the ladder anymore (M5.1): an exhaust of the
-    ladder on a *reachable* map is recorded as ``RUNG_SOLVER_FAILED`` by
-    :func:`solve`, and an unreachable map is caught by the corridor pre-check
-    as ``RUNG_PASS_UNREACHABLE`` before any candidate is tried.
+    The ``ccf`` rung sits between ``line`` and ``fixed_grid_gaussian``, which
+    is now on death row — it exists only until CCF beats it on the same seeds
+    (5.2.md §1; end state is four rungs with ``arc`` last). Every CCF
+    candidate still passes through the same ``_verify`` oracle loop as the
+    other rungs: a CCF certificate proves *clearance*, but whether the shot
+    *hits* an enemy is the simulator's call.
+
+    This is a LAZY generator: CCF's expensive scipy LP/MILP work is only paid
+    for when it is reached (i.e. after every cheaper rung fails to land a
+    verified clean hit), so the common path never touches scipy at all.
     """
-    cands: list[_Candidate | None] = []
     for b in _B_WIDTHS:
-        cands.append(_per_target_gaussians(frame, b))
-    cands.append(_parabola_candidate(frame))
-    cands.append(_line_candidate(frame))
-    cands.append(_fixed_grid_gaussians(frame, _B_WIDTHS[0]))
+        cand = _per_target_gaussians(frame, b)
+        if cand is not None:
+            yield cand
+    cand = _parabola_candidate(frame)
+    if cand is not None:
+        yield cand
+    cand = _line_candidate(frame)
+    if cand is not None:
+        yield cand
+    yield from _ccf_candidates(frame)
+    cand = _fixed_grid_gaussians(frame, _B_WIDTHS[0])
+    if cand is not None:
+        yield cand
     # The terrain-aware arc sweep is the last real attempt to hit something:
     # it only runs on the maps where every cheaper rung failed to land a shot
     # (i.e. would otherwise dud), so its per-candidate integration cost is paid
     # only there. It generalises the parabola rung by sweeping curvature so the
     # curve can clear terrain (see docs/OPEN_QUESTIONS.md).
-    cands.extend(_arc_candidates(frame))
-    return [c for c in cands if c is not None]
+    yield from _arc_candidates(frame)
 
 
 # --- Self-verification (the simulator is the oracle) ------------------------
@@ -465,11 +532,20 @@ def _make_result(cand: _Candidate, result: ShotResult, frame: _Frame) -> SolverR
     bound = cand.m_bound * _DU * _DU / 8.0
     n_hits = len(result.hits)
     n_steps = result.num_steps
+    notes = f"hits={n_hits} steps={n_steps} enemies={len(frame.enemies)}"
+    if cand.cert is not None:
+        cert = cand.cert
+        notes += (
+            f" ccf={cert.outcome.value}"
+            f" sigma={cert.sigma if cert.sigma is not None else '?'}"
+            f" branch={cert.branch_kind if cert.branch_kind is not None else '?'}"
+        )
     return SolverResult(
         expression=cand.expression,
         rung=cand.rung,
         bound=bound,
-        notes=f"hits={n_hits} steps={n_steps} enemies={len(frame.enemies)}",
+        notes=notes,
+        cert=cand.cert,
     )
 
 

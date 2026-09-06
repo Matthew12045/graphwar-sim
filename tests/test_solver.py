@@ -18,6 +18,7 @@ from graphwar_sim import Game
 from graphwar_sim.parser import PolishNotationFunction
 from graphwar_sim.solver import (
     RUNG_ARC,
+    RUNG_CCF,
     RUNG_PASS_UNREACHABLE,
     RUNG_SOLVER_FAILED,
     SolverResult,
@@ -94,6 +95,7 @@ def test_battery_hit_rate_and_rung_distribution_logged() -> None:
         "fixed_grid_gaussian",
         "line",
         "parabola",
+        RUNG_CCF,
         RUNG_ARC,
         RUNG_PASS_UNREACHABLE,
         RUNG_SOLVER_FAILED,
@@ -240,3 +242,134 @@ def test_no_eval_or_exec_in_module() -> None:
     assert "eval(" not in src.replace("evaluate(", "")
     assert "exec(" not in src
     assert "sympify" not in src
+
+
+# --- M5.2 CCF rung integration ----------------------------------------------
+
+
+def test_ordered_candidates_is_lazy_and_ordered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ladder generator yields rungs in the 5.2.md §1 order and is lazy:
+    pulling just the first candidate must not push the generator into CCF."""
+    from graphwar_sim.solver import (
+        RUNG_ARC,
+        RUNG_CCF,
+        RUNG_FIXED_GRID,
+        RUNG_LINE,
+        RUNG_PARABOLA,
+        RUNG_PER_TARGET,
+        _Candidate,
+        _Frame,
+        _ordered_candidates,
+    )
+
+    class _StubSoldier:
+        x = 100.0
+        y = 300.0
+        player_index = 0
+        soldier_index = 0
+        alive = True
+
+    frame = _Frame(
+        mx=-5.0,
+        my=0.0,
+        targets=[(10.0, 5.0), (20.0, 8.0), (30.0, 3.0)],
+        shooter=_StubSoldier(),
+        enemies=[_StubSoldier(), _StubSoldier(), _StubSoldier()],
+        inverted=False,
+        circles=(),
+        teammates=[],
+    )
+
+    # Laziness at the generator level: stub the CCF rung to record calls AND
+    # return a cheap sentinel candidate; pulling only the first candidate must
+    # never invoke it (the generator stops as soon as solve has its winner).
+    calls: list[_Frame] = []
+
+    def stub_ccf(f: _Frame) -> list[_Candidate]:
+        calls.append(f)
+        return [_Candidate(expression="0*x", rung=RUNG_CCF, m_bound=0.0)]
+
+    monkeypatch.setattr("graphwar_sim.solver._ccf_candidates", stub_ccf)
+    first = next(iter(_ordered_candidates(frame)))
+    assert first.rung == RUNG_PER_TARGET
+    assert calls == [], "CCF was invoked while producing the first candidate"
+
+    # Full materialisation order: fixed-grid / arc also stubbed to cheap
+    # sentinels so no expensive scipy / real LPs run at all.
+    def stub_fixed(f: _Frame, b: float) -> _Candidate | None:
+        return _Candidate(expression="0*x", rung=RUNG_FIXED_GRID, m_bound=0.0)
+
+    def stub_arc(f: _Frame) -> list[_Candidate]:
+        return [_Candidate(expression="0*x", rung=RUNG_ARC, m_bound=0.0)]
+
+    monkeypatch.setattr("graphwar_sim.solver._fixed_grid_gaussians", stub_fixed)
+    monkeypatch.setattr("graphwar_sim.solver._arc_candidates", stub_arc)
+    kinds = [c.rung for c in _ordered_candidates(frame)]
+    assert kinds == [
+        RUNG_PER_TARGET,
+        RUNG_PER_TARGET,
+        RUNG_PER_TARGET,
+        RUNG_PARABOLA,
+        RUNG_LINE,
+        RUNG_CCF,
+        RUNG_FIXED_GRID,
+        RUNG_ARC,
+    ]
+
+
+def test_ccf_rung_is_lazy_until_cheaper_rungs_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The solver never pays for CCF while a cheaper rung lands a verified hit,
+    but does reach the (stubbed) CCF rung when no cheap rung does."""
+    from graphwar_sim.physics import ShotResult
+    from graphwar_sim.solver import RUNG_CCF, _Candidate
+
+    # (a) Every candidate "hits": the first cheap rung wins, CCF never fires.
+    calls_hit: list[object] = []
+
+    def recording_ccf_hit(f: object) -> list[_Candidate]:
+        calls_hit.append(f)
+        return []
+
+    monkeypatch.setattr("graphwar_sim.solver._ccf_candidates", recording_ccf_hit)
+    monkeypatch.setattr(
+        "graphwar_sim.solver._verify",
+        lambda _game, _frame, _cand: (True, False, ShotResult()),
+    )
+    res_hit = solve(Game.create(7, num_soldiers=4))
+    assert res_hit.rung != RUNG_CCF
+    assert calls_hit == [], "CCF rung was invoked despite a cheaper verified hit"
+
+    # (b) No candidate hits (every _verify is a clean miss): the ladder runs
+    # through fixed_grid and arc, invoking the CCF stub, before exhausting.
+    calls_miss: list[object] = []
+
+    def recording_ccf_miss(f: object) -> list[_Candidate]:
+        calls_miss.append(f)
+        return []
+
+    monkeypatch.setattr("graphwar_sim.solver._ccf_candidates", recording_ccf_miss)
+    monkeypatch.setattr(
+        "graphwar_sim.solver._verify",
+        lambda _game, _frame, _cand: (False, False, ShotResult()),
+    )
+    res_miss = solve(Game.create(7, num_soldiers=4))
+    assert res_miss.rung == RUNG_SOLVER_FAILED
+    assert calls_miss != [], "CCF rung was never reached on a no-hit frame"
+
+
+def test_solve_ccf_smoke() -> None:
+    """A plain solve on a couple of real seeds still returns a parseable,
+    verified expression; if the CCF rung wins, its certificate is attached."""
+    from graphwar_sim.solver import RUNG_CCF
+
+    for seed in (4, 11):
+        game = Game.create(seed, num_soldiers=4)
+        res = solve(game)
+        PolishNotationFunction(res.expression)
+        assert math.isfinite(res.bound) and res.bound >= 0.0
+        if res.rung == RUNG_CCF:
+            assert res.cert is not None
+        shot = game.fire(res.expression)
+        assert shot.num_steps >= 1
