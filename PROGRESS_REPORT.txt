@@ -44,7 +44,9 @@ tree awaiting its measured report + commit.
                                                OR COMMITTED (this session)
   M5.3 agent budgets / M5.4 personas /
        M5.5 branch_hint vocabulary           NOT STARTED (design notes exist
-                                               in 5.2.md Appendix + ccf.py)
+                                                in 5.2.md Appendix + ccf.py)
+  UI  Interactive web client (NORMAL_FUNC)  DONE  ui/ (FastAPI + canvas
+                                                frontend) + docs/UI_GROUND_TRUTH.md
 
 3. COMMITS (M4 review pass ... current)
 -------------------------------------------------------------------------------

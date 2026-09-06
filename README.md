@@ -18,6 +18,7 @@ checks the Python physics against the compiled Java reference, shot for shot.
 | M2 | Deterministic solver | ✅ done — degradation ladder, 33/40 hit rate on the seeded battery |
 | M3 | Agents (minimal slice: solver + baselines; LLM agents deferred) | ✅ done — `agents/`, frame round-trip test |
 | M4 | Eval harness (win rate + hit rate only) | ✅ done — `eval/`, see `eval/results/leaderboard.md` |
+| UI | Interactive web client (NORMAL_FUNC) | ✅ done — `ui/`, visual spec in `docs/UI_GROUND_TRUTH.md` |
 
 ## Scope
 
@@ -63,6 +64,9 @@ eval/
   metrics.py       # win rate / hit rate roll-up
   __main__.py      # cli: run a fresh leaderboard or reproduce from seeds.json
   results/         # committed leaderboard + per-match plots + seeds.json
+ui/
+  server.py        # FastAPI wrapper: /api/new_game, /api/state, /api/fire
+  static/          # no-build-step frontend: canvas redraw of the Java game screen
 tools/
   golden/Graphwar/GoldenShot.java   # in-reference harness that dumps shots as JSON
   jar_probe/                        # one-off terrain probes
@@ -70,8 +74,10 @@ tests/
   golden/    # ≥20 scenarios compared against graphwar.jar output
   test_agents.py  # M3: frame round-trip, agent contract, full-match no-crash
   test_eval.py    # M4: determinism, reproducibility from the seed file
+  test_ui_server.py # UI: API contract via FastAPI TestClient
 docs/
   GROUND_TRUTH.md   # M0: the behavior spec with file:line citations
+  UI_GROUND_TRUTH.md # UI: the game client's look & behavior, with citations
   OPEN_QUESTIONS.md # reported divergences & carried-forward assumptions
 ```
 
@@ -97,6 +103,21 @@ python3 -m pip install -e ".[dev]"
 
 Requires Python 3.11+, `numpy`, `scipy`, `matplotlib`. Dev extras add
 `pytest`, `ruff`, `mypy`.
+
+## Play it (web UI)
+
+```bash
+python3 -m pip install -e ".[ui]"
+python3 -m uvicorn ui.server:app --reload
+```
+
+Open http://127.0.0.1:8000. This is a clean-room **redraw** of the original
+Java client's game screen (NORMAL_FUNC only): type `y = f(x)`, press Fire,
+and watch the shot trace the curve. The `New Match` button takes an optional
+seed (the input next to it) for reproducible maps. Two honest repurposings,
+called out in `docs/UI_GROUND_TRUTH.md` §8: the reference's multiplayer chat
+box is now a per-turn match log, and there is no turn countdown (the
+simulator has no turn clock).
 
 ## Running the golden tests
 

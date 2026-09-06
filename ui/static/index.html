@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Graphwar</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Tick labels: baked into backGame.png in the reference
+         (docs/UI_GROUND_TRUTH.md §2.3) -->
+    <div class="tick" id="tick-top">15</div>
+    <div class="tick" id="tick-bottom">-15</div>
+    <div class="tick" id="tick-left">-25</div>
+    <div class="tick" id="tick-right">25</div>
+
+    <canvas id="plane" width="770" height="450"></canvas>
+    <canvas id="compass" width="200" height="113"></canvas>
+    <div id="angle-box"></div>
+
+    <!-- y = label image (rsc/y.png at (125,468)) -->
+    <div id="y-label">y =</div>
+    <input id="func" type="text" autocomplete="off" spellcheck="false" aria-label="function y = f(x)">
+
+    <button id="fire" class="gbutton">Fire</button>
+    <!-- Occupies the reference's global-room slot (GameScreen.txt:55-59),
+         hidden in local games there; repurposed as New Match here. -->
+    <button id="new-match" class="gbutton small">New Match</button>
+    <button id="quit" class="gbutton">Quit</button>
+
+    <!-- TEXTBOXGAME rectangle, repurposed chat -> turn log (§8) -->
+    <div id="log" aria-live="polite"></div>
+    <!-- TEXTFIELD rectangle, repurposed chat input -> seed input -->
+    <input id="seed" type="text" autocomplete="off" placeholder="Seed (optional) — used by New Match">
+
+    <div id="overlay" class="hidden">
+      <div id="overlay-panel">
+        <div id="overlay-msg"></div>
+        <div id="overlay-buttons"></div>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

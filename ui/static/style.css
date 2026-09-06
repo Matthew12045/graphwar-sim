@@ -1,0 +1,186 @@
+/* Graphwar web UI — layout mirrors docs/UI_GROUND_TRUTH.md §1 (800×600). */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #3f6f3d;
+  font-family: "Sans", "DejaVu Sans", Verdana, Arial, sans-serif;
+}
+
+#app {
+  position: relative;
+  width: 800px;
+  height: 600px;
+  margin: 16px auto;
+  background: #9ed79b; /* Constants.java:25 */
+  overflow: hidden;
+  user-select: none;
+}
+
+/* --- plane (GameScreen.java:106) --- */
+#plane {
+  position: absolute;
+  left: 15px;
+  top: 15px;
+  width: 770px;
+  height: 450px;
+  background: #fff;
+  border: 1px solid #000; /* baked into backGame.png in the reference */
+}
+
+/* --- tick labels (baked into backGame.png; pixel-scan in §2.3) --- */
+.tick {
+  position: absolute;
+  font-size: 10px;
+  color: #000;
+  width: 20px;
+  text-align: center;
+  line-height: 10px;
+}
+#tick-top    { left: 390px; top: 2px; }
+#tick-bottom { left: 390px; top: 468px; }
+#tick-left   { left: 0px;   top: 234px; }
+#tick-right  { left: 780px; top: 234px; }
+
+/* --- compass (GraphAngleDisplay, GameScreen.java:112) --- */
+#compass {
+  position: absolute;
+  left: 10px;
+  top: 475px;
+  width: 200px;
+  height: 113px;
+}
+
+/* angle text box (left timer.png box; text at (155,583) per §3) */
+#angle-box {
+  position: absolute;
+  left: 135px;
+  top: 562px;
+  width: 89px;
+  height: 22px;
+  background: #fff;
+  border: 1px solid #b6b6b6;
+  font-size: 14px;
+  color: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* --- "y =" label (rsc/y.png, orange #FFAE00 + dark shadow) --- */
+#y-label {
+  position: absolute;
+  left: 125px;
+  top: 468px;
+  width: 70px;
+  height: 34px;
+  padding: 2px 0 0 14px;
+  font-size: 28px;
+  font-weight: bold;
+  color: #ffae00;
+  text-shadow: 2px 2px 0 #3f3f3f;
+}
+
+#func {
+  position: absolute;
+  left: 195px;
+  top: 480px;
+  width: 275px;
+  height: 25px; /* FIELDS_HEIGHT, Constants.java:30 */
+  border: 1px solid #9a9a9a;
+  background: #fff;
+  font-size: 14px;
+  font-family: inherit;
+  padding: 0 4px;
+}
+
+/* --- buttons (fire.png/quit.png redrawn: sage face, dark border,
+       orange #FFAE00 bold text with dark shadow) --- */
+.gbutton {
+  position: absolute;
+  width: 196px;
+  height: 44px;
+  border: 2px solid #3f3f3f;
+  border-radius: 21px;
+  background: linear-gradient(#e3eae2, #cbdacb);
+  color: #ffae00;
+  font-family: inherit;
+  font-weight: bold;
+  font-size: 26px;
+  text-shadow: 1px 1px 0 #3f3f3f;
+  cursor: pointer;
+}
+.gbutton:hover { filter: brightness(1.06); }
+.gbutton:active { filter: brightness(0.94); }
+.gbutton:disabled { filter: grayscale(0.7) brightness(0.95); cursor: default; }
+
+#fire      { left: 117px; top: 507px; }
+#new-match { left: 292px; top: 507px; height: 30px; font-size: 15px; }
+#quit      { left: 292px; top: 551px; }
+
+/* --- turn log (TEXTBOXGAME (485,480,300,75), repurposed chat) --- */
+#log {
+  position: absolute;
+  left: 485px;
+  top: 480px;
+  width: 300px;
+  height: 75px;
+  background: #fff;
+  border: 1px solid #9a9a9a;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 15px;
+  padding: 2px 4px;
+}
+#log .name { font-weight: bold; }
+#log .system { color: #a0a0a0; font-style: italic; } /* GraphTextBox.java:51-52 */
+#log .error { color: #c22; font-style: italic; }
+
+#seed {
+  position: absolute;
+  left: 485px;
+  top: 565px;
+  width: 300px;
+  height: 25px;
+  border: 1px solid #9a9a9a;
+  font-size: 12px;
+  font-family: inherit;
+  padding: 0 4px;
+}
+
+/* --- overlays: quit confirm + game over (showMessage style:
+       Sans BOLD 20 orange, GameScreen.java:175-178) --- */
+#overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+#overlay-panel {
+  background: #efefe6;
+  border: 2px solid #3f3f3f;
+  border-radius: 8px;
+  padding: 26px 36px;
+  text-align: center;
+  min-width: 320px;
+}
+#overlay-msg {
+  font-size: 20px;
+  font-weight: bold;
+  color: #ffae00;
+  text-shadow: 1px 1px 0 #3f3f3f;
+  margin-bottom: 18px;
+}
+#overlay-buttons { display: flex; gap: 24px; justify-content: center; }
+#overlay-buttons .gbutton {
+  position: static;
+  width: 110px;
+  height: 38px;
+  font-size: 18px;
+}
+
+.hidden { display: none; }
