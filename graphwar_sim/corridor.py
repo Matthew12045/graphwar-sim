@@ -83,6 +83,24 @@ lie in the cell's interval; the interval is convex so the chord lies inside
 it; f deviates from the chord by at most ``M·du²/8``; margin at both endpoints
 therefore certifies the CONTINUOUS curve across the cell.
 
+Terrain bands — the M5.1 ``_column_free`` and the M5.2 ``_cell_obstacle_band``
+— are evaluated at the DISCRETE tested column ``int(px)``: the physics calls
+``collide_point(int(x), int(y))``, and each trajectory point in column
+``int(px)`` is blocked on that circle's blocked ROWS at that column
+(``(pc - cx)^2 <= r^2``). Because ``int()`` truncates toward zero (``px >= 0``
+in the plane, so ``int`` == ``floor``), the continuous-px computation was up
+to one pixel row over-optimistic on a circle's RIGHT flank (``px > cx``), where
+the discrete column is closer to the centre and admits one MORE blocked row;
+on the LEFT flank it is farther, so continuous was already conservative. M5.2
+therefore unions the blocked row ranges over ALL discrete columns
+``[floor(px_lo), floor(px_hi)]`` of each cell (exact; the rows nest, so the
+union is the row range at the integer column closest to the centre).
+
+Exclusion disks are NOT discretized: soldier hit-tests are CONTINUOUS plane
+``dist² < r²`` tests (GROUND_TRUTH.md §2.6 — no ``int`` rounding), so their
+M5.1 and M5.2 bands stay continuous. Do not "fix" them to discrete columns —
+the physics never rounds a soldier hit.
+
 Exclusion-disk radii
 --------------------
 Teammate disks use the Phase 0 hit radius ``SOLDIER_RADIUS`` for the M5.1
@@ -271,15 +289,26 @@ def _column_free(
     edge). Missing that last cell would admit trajectory points that collide
     in the physics (fatal for a CERTIFICATE; the M5.1 sweep was only
     optimistically-reachable there, oracle-guarded).
+
+    The blocked rows are computed at the DISCRETE tested column
+    ``pc = int(px)``: ``int()`` truncates toward zero and ``px >= 0`` in the
+    plane, so ``int`` == ``floor``. On a circle's RIGHT flank (``px > cx``) the
+    discrete column ``pc <= px`` is CLOSER to the centre, giving a wider ``s``
+    and up to one more blocked row than the continuous ``px`` computation
+    admitted — over-optimistic, fatal for a CERTIFICATE. On the LEFT flank
+    (``px < cx``) it is FARTHER, so the continuous computation was already
+    conservative there. Evaluating at ``pc`` makes the corridor EXACT w.r.t.
+    the physics' rounding on both flanks.
     """
     px = plane_x_of(wx)
     if not (0 <= px < config.PLANE_LENGTH):
         return []  # out of bounds: collidePoint returns True (Obstacle.java:99-103)
+    pc = int(px)  # the tested column: physics calls collide_point(int(x), int(y))
 
     y_min, y_max = map_y_bounds()
     blocks: list[tuple[float, float]] = []
     for cx, cy, r in circles:
-        dx = px - cx
+        dx = pc - cx
         if abs(dx) > r:
             continue
         s = math.sqrt(r * r - dx * dx)
@@ -333,18 +362,31 @@ def _cell_obstacle_band(
 
     The crisp model (``make_circle_obstacle``) blocks integer rows whose
     CENTER is inside the circle, and the physics' ``int(y)`` extends each
-    blocked row to its full pixel cell. Over the cell, the per-column blocked
-    rows are ``[ceil(cy - s(x)), floor(cy + s(x))]`` with
-    ``s(x) = sqrt(r^2 - (x - cx)^2)`` maximized at the pixel x closest to the
-    centre, so the union over the cell is exactly
-    ``[ceil(cy - s_max), floor(cy + s_max)]`` and the world band covers those
-    rows' full cells: ``[y(floor(cy + s_max) + 1), y(ceil(cy - s_max))]``.
+    blocked row to its full pixel cell. The tested column is DISCRETE —
+    ``collide_point(int(x), int(y))`` — and ``plane_x_of`` is monotone, so
+    over the cell the trajectory rounds to any integer column
+    ``pc in [floor(px_lo), floor(px_hi)]``. Per-column blocked rows are
+    ``[ceil(cy - s), floor(cy + s)]`` with ``s(pc) = sqrt(r^2 - (pc - cx)^2)``;
+    they NEST around ``cy`` (a larger ``s`` covers a superset of rows), so the
+    exact union over those columns is the row range at ``s_max`` — the ``s`` of
+    the integer ``pc`` closest to ``cx`` inside the discrete range — and the
+    world band covers those rows' full cells:
+    ``[y(floor(cy + s_max) + 1), y(ceil(cy - s_max))]``.
     """
     px_lo, px_hi = plane_x_of(wx_lo), plane_x_of(wx_hi)
     lo, hi = min(px_lo, px_hi), max(px_lo, px_hi)
-    if hi < cx - r or lo > cx + r:
+    c_lo, c_hi = math.floor(lo), math.floor(hi)  # discrete tested columns
+    if c_hi < cx - r or c_lo > cx + r:
         return None
-    d = 0.0 if lo <= cx <= hi else min(abs(cx - lo), abs(cx - hi))
+    # plane_x_of is strictly monotone, so over the cell the trajectory's
+    # DISCRETE tested column int(px) can round to any integer in [c_lo, c_hi]
+    # (physics: collide_point(int(x), int(y))). Per-column blocked rows
+    # [ceil(cy - s), floor(cy + s)] are nested around cy (s is larger for the
+    # integer pc closest to cx), so the exact union over those columns is the
+    # row range at the integer pc closest to cx within the discrete range:
+    # computed in closed form, no loop needed.
+    p_lo, p_hi = max(c_lo, cx - r), min(c_hi, cx + r)
+    d = 0 if p_lo <= cx <= p_hi else min(abs(cx - p_lo), abs(cx - p_hi))
     s_max = math.sqrt(max(0.0, r * r - d * d))
     py_lo = math.ceil(cy - s_max)
     py_hi = math.floor(cy + s_max)
@@ -754,9 +796,7 @@ def reachability(game: Game) -> list[TargetReachability]:
     :func:`sweep_targets`.
     """
     fr = shooter_frame(game)
-    return sweep_targets(
-        fr.mx, fr.my, fr.targets, fr.teammates, fr.circles, fr.inverted
-    )
+    return sweep_targets(fr.mx, fr.my, fr.targets, fr.teammates, fr.circles, fr.inverted)
 
 
 __all__ = [

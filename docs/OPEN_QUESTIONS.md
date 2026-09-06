@@ -334,6 +334,23 @@ CONTAINING the branch is unclassifiable;
 `tests/test_corridor.py::test_cell_wise_envelope_catches_a_synthetic_spike`
 asserts the spike's cells raise the floor (narrowing), not chain death.
 
+**Addendum — second fidelity fix, same theme:** the blocked-row ranges must come
+from the physics' DISCRETE test column `int(px)` (the trajectory point is tested
+at `collide_point(int(x), int(y))`, not at the continuous `px`). The continuous
+`px` computation was up to one pixel row OVER-OPTIMISTIC on a circle's right
+flank (`px > cx`), where `int(px) <= px` puts the tested column closer to the
+centre and admits one more blocked row. This was found by the M5.2 property test
+once the tight-mode CCF gate frame fix (`ccf.py`: gate on `g(u) − my`, not the
+absolute fired curve) stopped masking it — the old broken gate's shifted window
+had rejected most ceiling-hugging tight candidates. `_column_free` now evaluates
+each circle at `pc = int(px)`; `_cell_obstacle_band` unions the blocked row
+ranges over every discrete column `[floor(px_lo), floor(px_hi)]` of the cell
+(the rows nest, so the exact union is the row range at the integer column
+closest to the centre). M5.1 verdicts stay sound — the sweep is now slightly
+more conservative on right flanks and unchanged elsewhere. The soldier
+hit-tests are CONTINUOUS `dist² < r²` (no `int` rounding), so exclusion disks
+were deliberately left continuous. Recorded, not tuned away.
+
 ### (j) §8 K branch paths — diversity-penalty DP re-runs, not exact K-best
 
 **Question (5.2.md §8):** "Take the K best paths."
