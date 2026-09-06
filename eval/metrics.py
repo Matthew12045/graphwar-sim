@@ -59,6 +59,12 @@ class AgentMatchStats:
     friendly_fire_shots: int = 0
     parse_failures: int = 0  # emissions that failed to parse (logged, M3)
     retries: int = 0  # re-samples after a parse failure (logged, M3)
+    # M5.3 simulate-tool accounting (merged from the agent's AgentStats; 0 for
+    # agents that never call the oracle — the M3 roster). Surfaced in the
+    # leaderboard only from M5.4, when a simulate-consuming agent exists
+    # (byte-parity: AgentLeaderRow deliberately does not aggregate these yet).
+    simulate_calls: int = 0  # delegated simulate-tool calls (wrapper-using agents)
+    simulate_denied: int = 0  # over-budget calls the wrapper refused
     # M5.1 taxonomy counters (turn outcomes / suppression, not attempts).
     pass_unreachable: int = 0  # corridor-proven unreachable turns
     solver_failed: int = 0  # reachable but the ladder could not convert it

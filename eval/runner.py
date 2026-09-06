@@ -285,6 +285,9 @@ def play_match(
         internal: AgentStats = agent.stats()
         stats[agent.name].parse_failures += internal.parse_failures
         stats[agent.name].retries += internal.retries
+        # M5.3: simulate-tool accounting (zero for agents without the wrapper).
+        stats[agent.name].simulate_calls += internal.simulate_calls
+        stats[agent.name].simulate_denied += internal.simulate_denied
 
     rung_counts: dict[str, dict[str, int]] = {}
     for agent in agents_by_team.values():

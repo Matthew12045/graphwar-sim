@@ -105,6 +105,35 @@ def test_deep_expression_classified_parse_error_no_crash() -> None:
     assert result.winner is not None or result.draw_reason in ("TURN_CAP", "STALEMATE")
 
 
+def test_simulate_accounting_counters_merge_from_agent() -> None:
+    """M5.3: the runner merges the agent's simulate accounting counters into
+    the match stats (AgentStats -> AgentMatchStats); agents without the
+    wrapper contribute 0. The leaderboard roll-up deliberately does not
+    surface them yet (byte-parity; columns deferred to M5.4)."""
+    from agents.base import Observation
+    from graphwar_sim import Game
+
+    class ProbingAgent:
+        """Reports fixed simulate accounting (the M5.4 wrapper-agent shape)."""
+
+        name = "prober"
+
+        def __init__(self) -> None:
+            self._stats = AgentStats(simulate_calls=5, simulate_denied=2)
+
+        def act(self, game: Game, obs: Observation) -> str:
+            return "0*x"
+
+        def stats(self) -> AgentStats:
+            return self._stats
+
+    result = play_match(5, ProbingAgent(), StraightShotAgent(), _small_config())
+    assert result.stats["prober"].simulate_calls == 5
+    assert result.stats["prober"].simulate_denied == 2
+    assert result.stats["straight"].simulate_calls == 0
+    assert result.stats["straight"].simulate_denied == 0
+
+
 # --- Plan / side balance -----------------------------------------------------
 
 

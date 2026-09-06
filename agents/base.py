@@ -74,10 +74,19 @@ class AgentStats:
     three M3 agents candidates are generated from a grammar that is
     guaranteed-parseable, so both counters are 0 in practice — their presence
     is the observable record that the (defensive) validation loop ran.
+
+    M5.3: the simulate-tool accounting counters. ``simulate_calls`` /
+    ``simulate_denied`` are filled only by agents that route their oracle
+    probes through :class:`agents.simulate_budget.BudgetedSimulator` (denied
+    = the wrapper raised ``SimulateBudgetExhausted``); the M3 agents never
+    call the oracle, so their counts are 0. Merged into the match stats by
+    the runner's ``internal:`` block.
     """
 
     parse_failures: int = 0
     retries: int = 0
+    simulate_calls: int = 0
+    simulate_denied: int = 0
 
 
 @runtime_checkable

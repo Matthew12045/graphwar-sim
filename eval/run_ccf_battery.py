@@ -24,12 +24,14 @@ import json
 import time
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 from agents import RandomAgent, StraightShotAgent
-from agents.base import Observation
+from agents.base import Agent, Observation
 from agents.solver_agent import SolverAgent
 from eval.runner import MatchConfig, play_match
 from graphwar_sim import Game
+from graphwar_sim.ccf import CCFCertificate
 from graphwar_sim.solver import (
     RUNG_ARC,
     RUNG_CCF,
@@ -54,7 +56,7 @@ class RecordingSolverAgent(SolverAgent):
 
     def __init__(self) -> None:
         super().__init__()
-        self.turn_meta: list[dict] = []
+        self.turn_meta: list[dict[str, Any]] = []
 
     def act(self, game: Game, obs: Observation) -> str:
         from graphwar_sim.solver import solve
@@ -65,8 +67,8 @@ class RecordingSolverAgent(SolverAgent):
         return result.expression
 
 
-def _shot_record(rung: str, expression: str, cert) -> dict:
-    rec: dict = {
+def _shot_record(rung: str, expression: str, cert: CCFCertificate | None) -> dict[str, Any]:
+    rec: dict[str, Any] = {
         "rung": rung,
         "expr_len": len(expression),
         "expression": expression,
@@ -92,7 +94,7 @@ def _shot_record(rung: str, expression: str, cert) -> dict:
     return rec
 
 
-def _make_side_agent(name: str, seed: int):
+def _make_side_agent(name: str, seed: int) -> Agent:
     if name == "solver":
         return RecordingSolverAgent()
     if name == "random":
@@ -107,8 +109,8 @@ def _main() -> None:
     cfg = MatchConfig(num_soldiers=data["num_soldiers"], max_turns=data["max_turns"])
     matches = data["matches"]
 
-    matches_out: list[dict] = []
-    shots_out: list[dict] = []
+    matches_out: list[dict[str, Any]] = []
+    shots_out: list[dict[str, Any]] = []
     t_start = time.perf_counter()
 
     solver_matches = [m for m in matches if m["a"] == "solver" or m["b"] == "solver"]
@@ -120,6 +122,9 @@ def _main() -> None:
         result = play_match(seed, agent_a, agent_b, cfg)
 
         solver_agent = agent_a if m["a"] == "solver" else agent_b
+        # solver_matches keeps only matches with a solver side, and
+        # _make_side_agent returns the recording wrapper for "solver".
+        assert isinstance(solver_agent, RecordingSolverAgent)
         for meta in solver_agent.turn_meta:
             rec = dict(meta)
             rec["seed"] = seed
