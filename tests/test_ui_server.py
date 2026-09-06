@@ -187,3 +187,126 @@ def test_static_frontend_served(client: TestClient) -> None:
     assert response.headers["content-type"].startswith("text/html")
     for asset in ("/style.css", "/app.js"):
         assert client.get(asset).status_code == 200
+
+
+# --- M5.4: team modes, agent turns, turn cap ---------------------------------
+
+
+def test_team_modes_default_human(client: TestClient) -> None:
+    """Omitted team_modes defaults both sides to human (old flow pinned)."""
+    data = client.post("/api/new_game", json={"seed": 21}).json()
+    assert data["team_modes"] == {"team1": "human", "team2": "human"}
+    assert data["max_turns"] is None
+    assert data["turns_played"] == 0
+    state = client.get("/api/state").json()
+    assert state["team_modes"] == {"team1": "human", "team2": "human"}
+
+
+def test_agent_turn_plays_deterministic_solver(client: TestClient) -> None:
+    from eval.metrics import ShotOutcome
+
+    data = client.post(
+        "/api/new_game",
+        json={
+            "seed": 21,
+            "team_modes": {"team1": "solver", "team2": "random"},
+            "max_turns": 30,
+        },
+    ).json()
+    assert data["team_modes"] == {"team1": "solver", "team2": "random"}
+    assert data["max_turns"] == 30
+
+    response = client.post("/api/agent_turn")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["agent"] == "solver"
+    assert body["outcome"] in set(ShotOutcome)
+    assert body["func_str"] and body["shot"]["num_steps"] >= 1
+    assert body["shooter"]["label"] == "Player 1"
+    assert body["board"]["current_turn"] == 1  # the turn advanced
+    assert body["board"]["turns_played"] == 1
+    assert body["game_over"] is False
+    assert body["draw_reason"] is None
+
+    # The next side (random) plays too — one turn per request.
+    response = client.post("/api/agent_turn")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["agent"] == "random"
+    assert body["board"]["turns_played"] == 2
+
+    # /api/fire still drives the human sides (team1 is up again, human).
+    fire = client.post("/api/fire", json={"func_str": "x/2"})
+    assert fire.status_code == 200, fire.text
+
+
+def test_agent_turn_on_human_side_is_409(client: TestClient) -> None:
+    client.post("/api/new_game", json={"seed": 21})
+    response = client.post("/api/agent_turn")
+    assert response.status_code == 409
+    assert response.json()["error"] == "human_turn"
+
+
+def test_turn_cap_draw_reports_turn_cap(client: TestClient) -> None:
+    client.post(
+        "/api/new_game",
+        json={
+            "seed": 21,
+            "team_modes": {"team1": "solver", "team2": "solver"},
+            "max_turns": 1,
+        },
+    )
+    first = client.post("/api/agent_turn")
+    assert first.status_code == 200, first.text
+    # The shot that crosses the cap reports the draw already (post-turn check).
+    assert first.json()["game_over"] is True
+    assert first.json()["draw_reason"] == "TURN_CAP"
+
+    second = client.post("/api/agent_turn")
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["game_over"] is True
+    assert body["winner"] is None
+    assert body["draw_reason"] == "TURN_CAP"
+    assert "shot" not in body  # no shot is fired at the cap
+    assert body["board"]["turns_played"] == 1
+    assert body["board"]["max_turns"] == 1
+
+    # /api/fire reports the same cap shape (no shot fired at the cap).
+    fire = client.post("/api/fire", json={"func_str": "x"})
+    assert fire.status_code == 200
+    assert fire.json()["draw_reason"] == "TURN_CAP"
+
+
+def test_llm_mode_without_auth_env_is_400(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    response = client.post(
+        "/api/new_game",
+        json={"team_modes": {"team1": "llm:qwen3.8-27b-fp8", "team2": "human"}},
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"] == "bad_team_modes"
+    assert "ANTHROPIC_AUTH_TOKEN" in body["detail"]
+    # The lazy match is untouched: state still serves the previous game.
+    assert client.get("/api/state").json()["team_modes"] == {"team1": "human", "team2": "human"}
+
+
+def test_unknown_mode_is_400(client: TestClient) -> None:
+    response = client.post(
+        "/api/new_game",
+        json={"team_modes": {"team1": "nope", "team2": "human"}},
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"] == "bad_team_modes"
+    assert "unknown agent in roster: nope" in body["detail"]
+
+
+def test_bad_max_turns_is_400(client: TestClient) -> None:
+    response = client.post("/api/new_game", json={"max_turns": 0})
+    assert response.status_code == 400
+    assert response.json()["error"] == "bad_max_turns"

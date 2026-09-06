@@ -39,6 +39,14 @@ var angleBox = document.getElementById("angle-box");
 var overlay = document.getElementById("overlay");
 var overlayMsg = document.getElementById("overlay-msg");
 var overlayButtons = document.getElementById("overlay-buttons");
+var modeTeam1Sel = document.getElementById("mode-team1");
+var modeTeam2Sel = document.getElementById("mode-team2");
+var modelTeam1Input = document.getElementById("model-team1");
+var modelTeam2Input = document.getElementById("model-team2");
+var maxTurnsInput = document.getElementById("max-turns");
+var playPauseBtn = document.getElementById("play-pause");
+var stepBtn = document.getElementById("step");
+var speedSel = document.getElementById("speed");
 
 var board = null;
 var seed = null;
@@ -51,6 +59,18 @@ var hitFlashes = []; // [{x, y, start}]
 var fadingTraj = null; // {points, color, fadeStart}
 var animating = false;
 var gameOver = false;
+
+// --- M5.4 spectator state ----------------------------------------------------
+// # TUNABLE — not from source: the inter-turn pacing + speed table scale ONLY
+// the delay BETWEEN turns (animation durations above stay constant); the UI
+// default max_turns (index.html) is conservative for live-API agent loops
+// (eval's MatchConfig 100 is a batch number).
+var BASE_INTER_TURN_DELAY = 700; // ms between agent turns at 1x
+var DEFAULT_LLM_MODEL = "qwen3.8-27b-fp8"; // the 9arm gateway model
+var teamModes = { team1: "human", team2: "human" };
+var playing = false;
+var playTimer = null; // setTimeout handle for the next agent turn
+var speed = 1; // scales the inter-turn delay only (BASE / speed)
 
 // --- helpers ---------------------------------------------------------------
 
@@ -94,19 +114,20 @@ function outcomeOf(shot) {
   return "TERRAIN";
 }
 
-function logTurn(shooter, funcStr, shot) {
-  logLine([
-    {
-      cls: "name",
-      color: shooter.color,
-      text:
-        shooter.label +
-        " (Soldier " +
-        (shooter.soldier_index + 1) +
-        "): ",
-    },
+function logTurn(shooter, funcStr, shot, agentName, solverRung) {
+  // M5.4: agent-driven turns name the driver ("Player 1 (Solver)");
+  // human fire keeps the soldier label. textContent-only — no HTML injection.
+  var nameText = agentName
+    ? shooter.label + " (" + agentName + ")"
+    : shooter.label + " (Soldier " + (shooter.soldier_index + 1) + ")";
+  var spans = [
+    { cls: "name", color: shooter.color, text: nameText + ": " },
     { cls: "", text: funcStr + " → " + outcomeOf(shot) },
-  ]);
+  ];
+  if (solverRung) {
+    spans.push({ cls: "system", text: " [rung: " + solverRung + "]" });
+  }
+  logLine(spans);
 }
 
 // --- overlay (quit confirm / game over) ------------------------------------
@@ -446,6 +467,128 @@ function setInputEnabled(enabled) {
   fireBtn.disabled = !enabled;
 }
 
+// --- M5.4 setup + playback controls -----------------------------------------
+
+function updateModelInputs() {
+  modelTeam1Input.classList.toggle("hidden", modeTeam1Sel.value !== "llm");
+  modelTeam2Input.classList.toggle("hidden", modeTeam2Sel.value !== "llm");
+}
+
+function composedMode(modeSelect, modelInput) {
+  // The wire string is the roster entry: "llm:<model>" for LLM sides.
+  if (modeSelect.value !== "llm") return modeSelect.value;
+  var model = modelInput.value.trim();
+  return "llm:" + (model === "" ? DEFAULT_LLM_MODEL : model);
+}
+
+function wireToSelect(mode) {
+  if (mode === "human" || mode === "solver" || mode === "random" || mode === "straight") {
+    return mode;
+  }
+  return mode.indexOf("llm:") === 0 ? "llm" : "human";
+}
+
+function wireToModel(mode) {
+  return mode.indexOf("llm:") === 0 ? mode.slice(4) : DEFAULT_LLM_MODEL;
+}
+
+function syncSetupFromServer(data) {
+  if (data.team_modes) {
+    teamModes = {
+      team1: data.team_modes.team1 || "human",
+      team2: data.team_modes.team2 || "human",
+    };
+    modeTeam1Sel.value = wireToSelect(teamModes.team1);
+    modelTeam1Input.value = wireToModel(teamModes.team1);
+    modeTeam2Sel.value = wireToSelect(teamModes.team2);
+    modelTeam2Input.value = wireToModel(teamModes.team2);
+    updateModelInputs();
+  }
+  if (typeof data.max_turns === "number") {
+    maxTurnsInput.value = data.max_turns;
+  }
+}
+
+function currentSideMode() {
+  if (!board || !board.shooter) return "human";
+  return board.shooter.player_index === 0 ? teamModes.team1 : teamModes.team2;
+}
+
+// The single source of truth for input/button state: the function input is
+// enabled only when the game is live and a HUMAN side is up (human-vs-human
+// behavior unchanged); agent sides are server-driven.
+function updateControls() {
+  var humanUp = !gameOver && !animating && currentSideMode() === "human";
+  setInputEnabled(humanUp);
+  playPauseBtn.disabled = gameOver;
+  stepBtn.disabled = gameOver || playing || animating || currentSideMode() === "human";
+}
+
+function scheduleNext() {
+  // Autoplay driver: exactly one agent turn per tick; a human side just
+  // waits (input re-enabled via updateControls).
+  if (gameOver || !playing || currentSideMode() === "human") return;
+  playTimer = setTimeout(function () {
+    playTimer = null;
+    agentTurn();
+  }, BASE_INTER_TURN_DELAY / speed);
+}
+
+function setPlaying(on) {
+  playing = on;
+  playPauseBtn.textContent = on ? "Pause" : "Play";
+  if (!on && playTimer !== null) {
+    clearTimeout(playTimer);
+    playTimer = null;
+  }
+  updateControls();
+  if (on && !animating && !gameOver) scheduleNext();
+}
+
+function agentTurn() {
+  if (animating || gameOver) return;
+  animating = true;
+  updateControls();
+  postJSON("/api/agent_turn", {})
+    .then(function (r) {
+      if (r.status === 409) {
+        animating = false;
+        if (r.data.error === "human_turn") {
+          updateControls();
+          return;
+        }
+        applyBoard(r.data.board);
+        gameOver = true;
+        updateControls();
+        return;
+      }
+      if (r.status !== 200) {
+        animating = false;
+        updateControls();
+        logSystem(apiErrorText(r.status, r.data));
+        return;
+      }
+      var data = r.data;
+      if (data.draw_reason === "TURN_CAP" && data.shot === undefined) {
+        // Arrived at an already-spent cap: no shot traveled.
+        animating = false;
+        applyBoard(data.board);
+        gameOver = true;
+        updateControls();
+        showOverlay("Draw — turn cap reached", [
+          { label: "OK", action: function () {} },
+        ]);
+        return;
+      }
+      animateShotResponse(data);
+    })
+    .catch(function (err) {
+      animating = false;
+      updateControls();
+      logSystem("Server unreachable: " + err);
+    });
+}
+
 function newGame() {
   var body = {};
   var seedText = seedInput.value.trim();
@@ -453,6 +596,13 @@ function newGame() {
     var parsed = Number(seedText);
     if (!isNaN(parsed)) body.seed = Math.trunc(parsed);
   }
+  body.team_modes = {
+    team1: composedMode(modeTeam1Sel, modelTeam1Input),
+    team2: composedMode(modeTeam2Sel, modelTeam2Input),
+  };
+  var mt = parseInt(maxTurnsInput.value, 10);
+  if (!isNaN(mt) && mt >= 1) body.max_turns = mt;
+  setPlaying(false);
   postJSON("/api/new_game", body)
     .then(function (r) {
       if (r.status !== 200) {
@@ -467,7 +617,8 @@ function newGame() {
       animating = false;
       dialAngle = null;
       applyBoard(r.data);
-      setInputEnabled(true);
+      syncSetupFromServer(r.data);
+      updateControls();
       overlay.classList.add("hidden");
       logSystem("New match started (seed " + seed + ")");
     })
@@ -486,17 +637,72 @@ function finishShot(now, data) {
     fadeStart: now,
   };
   applyBoard(data.board);
+  // Soft turn-cap draw: the board itself is not finished, but the budget is
+  // spent — treat the match as over (draw_reason TURN_CAP).
+  if (data.game_over && !gameOver) gameOver = true;
   animating = false;
-  if (data.game_over) {
-    setInputEnabled(false);
+  updateControls();
+  if (gameOver) {
+    if (playing) setPlaying(false);
     var winner = data.winner;
-    var label = winner !== null && winner !== undefined ? "Team " + winner : "Nobody";
-    showOverlay(label + " wins the match!", [
-      { label: "OK", action: function () {} },
-    ]);
+    if (winner !== null && winner !== undefined) {
+      showOverlay("Team " + winner + " wins the match!", [
+        { label: "OK", action: function () {} },
+      ]);
+    } else if (data.draw_reason === "TURN_CAP") {
+      showOverlay("Draw — turn cap reached", [
+        { label: "OK", action: function () {} },
+      ]);
+    } else {
+      showOverlay("Nobody wins the match!", [
+        { label: "OK", action: function () {} },
+      ]);
+    }
   } else {
-    setInputEnabled(true);
+    scheduleNext();
   }
+}
+
+// The single post-response animation pipeline, shared by the human fire
+// path and the spectator agent path: log → dial → shotAnim → explosion →
+// hitFlashes → waitExplosion → finishShot.
+function animateShotResponse(data) {
+  var now = performance.now();
+  logTurn(data.shooter, data.func_str, data.shot, data.agent, data.solver_rung);
+  if (data.start_angle !== null && data.start_angle !== undefined) {
+    dialAngle = data.start_angle; // display-only; set on fire (GameData.java:1113)
+  }
+  dialColor = data.shooter.color;
+  dialInverted = data.shooter.inverted;
+  drawCompass();
+
+  shotAnim = { points: data.shot.points, color: data.shooter.color, start: now };
+  if (data.shot.last_x !== null && data.shot.last_y !== null) {
+    explosion = { x: data.shot.last_x, y: data.shot.last_y, start: now + FLY_TIME };
+  }
+  hitFlashes = data.shot.hits
+    .filter(function (h) {
+      return (
+        h[2] < data.shot.points.length &&
+        data.shot.points[h[2]][0] !== null &&
+        data.shot.points[h[2]][1] !== null
+      );
+    })
+    .map(function (h) {
+      var p = data.shot.points[h[2]];
+      return { x: p[0], y: p[1], start: now + FLY_TIME };
+    });
+
+  // board (kills + turn) lands when the explosion ends
+  var waitExplosion = function () {
+    var t = performance.now();
+    if (!explosion || t - explosion.start >= EXPLOSION_TIME) {
+      finishShot(t, data);
+    } else {
+      requestAnimationFrame(waitExplosion);
+    }
+  };
+  requestAnimationFrame(waitExplosion);
 }
 
 function fire() {
@@ -505,69 +711,45 @@ function fire() {
   if (funcStr.length === 0) return; // GameScreen.java:433
 
   animating = true;
-  setInputEnabled(false);
+  updateControls();
   postJSON("/api/fire", { func_str: funcStr })
     .then(function (r) {
-      var now = performance.now();
       if (r.status === 400) {
         animating = false;
-        setInputEnabled(true);
+        updateControls();
         logLine([{ cls: "error", text: "malformed function (Python-side parse error)" }]);
         return;
       }
       if (r.status === 409) {
         animating = false;
         applyBoard(r.data.board);
-        setInputEnabled(false);
+        gameOver = true;
+        updateControls();
         return;
       }
       if (r.status !== 200) {
         animating = false;
-        setInputEnabled(true);
+        updateControls();
         logSystem(apiErrorText(r.status, r.data));
         return;
       }
-
       var data = r.data;
-      logTurn(data.shooter, data.func_str, data.shot);
-      if (data.start_angle !== null && data.start_angle !== undefined) {
-        dialAngle = data.start_angle; // display-only; set on fire (GameData.java:1113)
+      if (data.draw_reason === "TURN_CAP" && data.shot === undefined) {
+        // Fired at an already-spent cap: no shot traveled.
+        animating = false;
+        applyBoard(data.board);
+        gameOver = true;
+        updateControls();
+        showOverlay("Draw — turn cap reached", [
+          { label: "OK", action: function () {} },
+        ]);
+        return;
       }
-      dialColor = data.shooter.color;
-      dialInverted = data.shooter.inverted;
-      drawCompass();
-
-      shotAnim = { points: data.shot.points, color: data.shooter.color, start: now };
-      if (data.shot.last_x !== null && data.shot.last_y !== null) {
-        explosion = { x: data.shot.last_x, y: data.shot.last_y, start: now + FLY_TIME };
-      }
-      hitFlashes = data.shot.hits
-        .filter(function (h) {
-          return (
-            h[2] < data.shot.points.length &&
-            data.shot.points[h[2]][0] !== null &&
-            data.shot.points[h[2]][1] !== null
-          );
-        })
-        .map(function (h) {
-          var p = data.shot.points[h[2]];
-          return { x: p[0], y: p[1], start: now + FLY_TIME };
-        });
-
-      // board (kills + turn) lands when the explosion ends
-      var waitExplosion = function () {
-        var t = performance.now();
-        if (!explosion || t - explosion.start >= EXPLOSION_TIME) {
-          finishShot(t, data);
-        } else {
-          requestAnimationFrame(waitExplosion);
-        }
-      };
-      requestAnimationFrame(waitExplosion);
+      animateShotResponse(data);
     })
     .catch(function (err) {
       animating = false;
-      setInputEnabled(true);
+      updateControls();
       logSystem("Server unreachable: " + err);
     });
 }
@@ -581,6 +763,18 @@ funcInput.addEventListener("keydown", function (ev) {
 newBtn.addEventListener("click", newGame);
 seedInput.addEventListener("keydown", function (ev) {
   if (ev.key === "Enter") newGame();
+});
+modeTeam1Sel.addEventListener("change", updateModelInputs);
+modeTeam2Sel.addEventListener("change", updateModelInputs);
+playPauseBtn.addEventListener("click", function () {
+  setPlaying(!playing);
+});
+stepBtn.addEventListener("click", function () {
+  if (animating || playing || gameOver) return;
+  agentTurn(); // exactly one agent turn while paused
+});
+speedSel.addEventListener("change", function () {
+  speed = parseFloat(speedSel.value); // scales the inter-turn delay only
 });
 quitBtn.addEventListener("click", function () {
   if (animating) return;
@@ -599,10 +793,13 @@ postJSON("/api/new_game", {})
   .then(function (r) {
     if (r.status !== 200) {
       logSystem(apiErrorText(r.status, r.data));
+      updateControls();
       return;
     }
     seed = r.data.seed;
     applyBoard(r.data);
+    syncSetupFromServer(r.data);
+    updateControls();
     logSystem("New match started (seed " + seed + ")");
   })
   .catch(function (err) {

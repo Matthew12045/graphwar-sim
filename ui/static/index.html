@@ -40,6 +40,54 @@
       </div>
     </div>
   </div>
+
+  <!-- M5.4 spectator controls (below the 800x600 game box; nothing inside
+       #app is repositioned). Modes map 1:1 to the eval roster entries;
+       "LLM" composes the wire string llm:<model>. -->
+  <div id="controls">
+    <div id="setup-panel" class="panel">
+      <span class="setup-group">
+        <label for="mode-team1">Player 1</label>
+        <select id="mode-team1">
+          <option value="human" selected>Human</option>
+          <option value="solver">Solver</option>
+          <option value="random">Random</option>
+          <option value="straight">Straight Shot</option>
+          <option value="llm">LLM</option>
+        </select>
+        <input id="model-team1" type="text" class="hidden" spellcheck="false" value="qwen3.8-27b-fp8" aria-label="LLM model for Player 1">
+      </span>
+      <span class="setup-group">
+        <label for="mode-team2">Player 2</label>
+        <select id="mode-team2">
+          <option value="human" selected>Human</option>
+          <option value="solver">Solver</option>
+          <option value="random">Random</option>
+          <option value="straight">Straight Shot</option>
+          <option value="llm">LLM</option>
+        </select>
+        <input id="model-team2" type="text" class="hidden" spellcheck="false" value="qwen3.8-27b-fp8" aria-label="LLM model for Player 2">
+      </span>
+      <span class="setup-group">
+        <label for="max-turns">Max turns</label>
+        <!-- # TUNABLE — not from source: conservative for live-API agent
+             loops (eval's MatchConfig 100 is a batch number). -->
+        <input id="max-turns" type="number" min="1" value="30">
+      </span>
+      <span class="setup-hint">applied by New Match</span>
+    </div>
+    <div id="playback-bar" class="panel">
+      <button id="play-pause" class="gbutton small">Play</button>
+      <button id="step" class="gbutton small">Step</button>
+      <label for="speed">Speed</label>
+      <select id="speed">
+        <option value="0.5">0.5x</option>
+        <option value="1" selected>1x</option>
+        <option value="2">2x</option>
+        <option value="4">4x</option>
+      </select>
+    </div>
+  </div>
   <script src="app.js"></script>
 </body>
 </html>
