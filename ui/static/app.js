@@ -360,7 +360,8 @@ function drawCompass() {
   cctx.clearRect(0, 0, 200, 113);
   var cx = 57;
   var cy = 57;
-  var r = 30;
+  var wedgeR = 30; // fillArc(27,27,60,60) -> radius 30, GraphAngleDisplay.java:76
+  var circleR = 53; // backAngle.png outline, chord-measured off screenshot 1
 
   if (dialAngle !== null) {
     // Java fillArc: 0° at 3 o'clock, positive counter-clockwise.
@@ -373,7 +374,7 @@ function drawCompass() {
     cctx.fillStyle = dialColor;
     cctx.beginPath();
     cctx.moveTo(cx, cy);
-    cctx.arc(cx, cy, r, a0, a1, false);
+    cctx.arc(cx, cy, wedgeR, a0, a1, false);
     cctx.closePath();
     cctx.fill();
   }
@@ -396,17 +397,17 @@ function drawCompass() {
     cctx.stroke();
   }
 
-  // circle outline (backAngle.png artwork, redrawn)
+  // circle outline (backAngle.png artwork, redrawn; tips touch the crosshair)
   cctx.beginPath();
-  cctx.arc(cx, cy, r, 0, Math.PI * 2);
+  cctx.arc(cx, cy, circleR, 0, Math.PI * 2);
   cctx.stroke();
 
   // angle text (GraphAngleDisplay.java:93-108: degrees, 2 decimals, °)
   if (dialAngle === null) {
     angleBox.textContent = "";
   } else {
-    var deg = Math.round(dialAngle * (180 / Math.PI) * 100) / 100;
-    angleBox.textContent = deg + "°";
+    var deg = dialAngle * (180 / Math.PI);
+    angleBox.textContent = deg.toFixed(2) + "°";
   }
 }
 
@@ -436,6 +437,7 @@ function applyBoard(newBoard) {
     dialColor = board.shooter.color;
     dialInverted = board.shooter.inverted;
   }
+  if (dialAngle === null) dialAngle = 0; // soldier angle starts at 0 (display-only)
   drawCompass();
 }
 
