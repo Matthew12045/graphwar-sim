@@ -173,7 +173,13 @@ shifts your curve VERTICALLY so it passes through the muzzle: effective \
 curve = f(x) + (sy - f(sx)); it also nudges the launch point along the \
 curve's own tangent first. Aim so the shifted curve passes within hit \
 radius (~0.45 world units) of an enemy's (x, y). Hitting a teammate is a \
-critical failure. Terrain ('#' cells) ends the shot harmlessly.
+critical failure.
+
+HARD RULES: the playable plane is y in [-14.6, +14.6]; the shot is KILLED \
+the instant the curve leaves that band or touches '#' terrain — it must \
+survive all the way to the enemy's x. Check the terrain immediately to the \
+right of your own muzzle first: if it is a wall, launch DESCENDING so the \
+auto-offset still lifts the curve while it slips under or around the rock.
 
 SYNTAX (the parser's exact tokenizer whitelist — nothing else exists): \
 numbers, ( ) x + - * / ^, functions sqrt log (base 10) ln abs sin sen cos \
@@ -183,14 +189,21 @@ as a+(-b)). Unknown characters are silently DROPPED. Max 2000 chars; \
 deeper than 64 nested terms is rejected (your shot is replaced by a safe \
 dud).
 
-THINK BRIEFLY. Do NOT derive trajectories analytically — that wastes the \
-turn. Sketch at most a couple of candidate expressions, then probe with \
-simulate and adjust.
+THINK BRIEFLY. Do NOT derive trajectories analytically — probe with \
+simulate and correct from the telemetry: fix the height when \
+miss_direction says you passed on the wrong side, but FIRST make sure the \
+shot reaches the enemy at all (stop_reason "short"/"terrain"/"off_map" \
+means it died before getting there).
 
 TOOL: simulate(expr) fires a candidate through the real physics WITHOUT \
 applying kills. Returns {parseable, hit_enemy, hit_teammate, num_hits, \
-error}. You have a limited per-turn budget of calls (each turn message \
-states the remaining count). Revise. Then commit.
+error, nearest_miss, miss_direction, stopped_at_x, stop_reason}: \
+nearest_miss = world-unit distance from the nearest enemy (~0.45 = hit), \
+miss_direction = "high"/"low" (which side of the enemy the curve passed \
+on), stopped_at_x = the world x where the shot ended, stop_reason = "hit" \
+| "terrain" | "off_map" | "short" | "passed". You have a limited per-turn \
+budget of calls (each turn message states the remaining count). Revise. \
+Then commit.
 
 OUTPUT: after your final simulate call, emit ONLY the bare expression on \
 one line (no "y =", no prose, no code fence).\
@@ -228,7 +241,11 @@ def _validate(expr: str) -> str | None:
 
 def _sim_result_json(result: SimResult) -> str:
     """The simulate tool_result payload: exactly the fields the system prompt
-    promises (``num_steps`` stays internal)."""
+    promises (``num_steps`` stays internal). The miss telemetry is the
+    model's only gradient — a binary hit/miss hides "stopped short" from
+    "wrong height" (live diagnosis 2026-09-07)."""
+    nearest = round(result.nearest_miss, 3) if result.nearest_miss is not None else None
+    stop_x = round(result.stopped_at_x, 2) if result.stopped_at_x is not None else None
     return json.dumps(
         {
             "parseable": result.parseable,
@@ -236,6 +253,10 @@ def _sim_result_json(result: SimResult) -> str:
             "hit_teammate": result.hit_teammate,
             "num_hits": result.num_hits,
             "error": result.error,
+            "nearest_miss": nearest,
+            "miss_direction": result.miss_direction,
+            "stopped_at_x": stop_x,
+            "stop_reason": result.stop_reason,
         }
     )
 

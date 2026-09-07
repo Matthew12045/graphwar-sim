@@ -327,8 +327,23 @@ def test_tool_use_round_returns_simresult_fields() -> None:
     import json
 
     payload = json.loads(tool_result["content"])
-    assert set(payload) == {"parseable", "hit_enemy", "hit_teammate", "num_hits", "error"}
+    assert set(payload) == {
+        "parseable",
+        "hit_enemy",
+        "hit_teammate",
+        "num_hits",
+        "error",
+        "nearest_miss",
+        "miss_direction",
+        "stopped_at_x",
+        "stop_reason",
+    }
     assert payload["parseable"] is True
+    # Miss telemetry: a real gradient, not a binary coin (live diagnosis).
+    assert isinstance(payload["nearest_miss"], float)
+    assert payload["miss_direction"] in {"high", "low"}
+    assert isinstance(payload["stopped_at_x"], float)
+    assert payload["stop_reason"] in {"hit", "terrain", "off_map", "short", "passed"}
 
 
 # --- 5. budget denial: error result, no delegation -----------------------------
@@ -446,3 +461,30 @@ def test_system_prompt_contains_exact_whitelist() -> None:
     for token in ("sqrt", "log", "ln", "abs", "sin", "cos", "tan", "x ONLY", "e pi"):
         assert token in _SYSTEM_PROMPT, token
     assert 'no "y ="' in _SYSTEM_PROMPT  # the bare-expression output contract
+
+
+# --- 8. miss telemetry (the model's gradient) ---------------------------------
+
+
+def test_unparseable_simulate_has_null_telemetry() -> None:
+    from agents.simulate_tool import simulate as oracle
+
+    game, _obs = _game_and_obs()
+    result = oracle(game, "((")
+    assert result.parseable is False
+    assert result.nearest_miss is None
+    assert result.stop_reason is None
+
+
+def test_telemetry_reports_termination_reason() -> None:
+    """Deterministic seed: the committed probe on seed 21 carries a full
+    miss report (distance, direction, stop x, reason)."""
+    from agents.simulate_tool import simulate as oracle
+
+    game = Game.create(21, num_soldiers=2)
+    result = oracle(game, "0*x")  # horizontal line at the shooter's y
+    assert result.parseable is True
+    assert result.stop_reason in {"hit", "terrain", "off_map", "short", "passed"}
+    assert result.nearest_miss is not None and result.nearest_miss >= 0
+    assert result.miss_direction in {"high", "low"}
+    assert result.stopped_at_x is not None
