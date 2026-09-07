@@ -75,6 +75,11 @@ ui/
 tools/
   golden/Graphwar/GoldenShot.java   # in-reference harness that dumps shots as JSON
   jar_probe/                        # one-off terrain probes
+  time_tests.py
+planning/          # milestone specs & plans (graph_war.md, IMPLEMENTATION_PLAN.md,
+                   # 5.2.md, The_bridge_nobody_wrote_down.md, PROGRESS_REPORT.txt)
+sketches/          # superseded design drafts — see sketches/README.md
+personas/          # shared LLM prompt + style prompts for agent-based play
 tests/
   golden/    # ≥20 scenarios compared against graphwar.jar output
   test_agents.py  # M3: frame round-trip, agent contract, full-match no-crash
