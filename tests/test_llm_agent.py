@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from agents import StraightShotAgent
 from agents.llm_agent import (
     _BUDGET_EXHAUSTED_TEXT,
     _SYSTEM_PROMPT,
@@ -20,6 +21,7 @@ from agents.llm_agent import (
     LLMAgent,
 )
 from agents.observation import observe
+from eval.runner import MatchConfig, play_match
 from graphwar_sim import Game
 
 # --- fake client (minimal Anthropic surface) ---------------------------------
@@ -73,6 +75,30 @@ class _FakeMessages:
 class _FakeClient:
     def __init__(self, responses: list[_Response]) -> None:
         self.messages = _FakeMessages(responses)
+
+
+class _DyingAfterMessages:
+    """Serves the scripted responses, then raises a retryable transport error
+    on every further call (the gateway-killed-every-regeneration case)."""
+
+    def __init__(self, responses: list[_Response]) -> None:
+        self._responses = list(responses)
+        self.calls = 0
+
+    def create(self, **kwargs: Any) -> _Response:
+        self.calls += 1
+        if self._responses:
+            return self._responses.pop(0)
+        raise RemoteProtocolError("peer closed connection")
+
+
+class RemoteProtocolError(Exception):
+    """Duck-typed name the agent's retry set knows (no SDK import)."""
+
+
+class _DyingAfterClient:
+    def __init__(self, responses: list[_Response]) -> None:
+        self.messages = _DyingAfterMessages(responses)
 
 
 class _FakeStream:
@@ -130,6 +156,13 @@ def _game_and_obs() -> tuple[Game, Any]:
     return game, observe(game)
 
 
+def _seed21_game_and_obs() -> tuple[Game, Any]:
+    """The live-diagnosis board: muzzle rock just right of the shooter, an
+    ally the scripted teammate-hit commit curve strikes."""
+    game = Game.create(21, num_soldiers=2)
+    return game, observe(game)
+
+
 # --- 1. well-formed first response -------------------------------------------
 
 
@@ -140,8 +173,11 @@ def test_well_formed_first_response_verbatim_zero_counters() -> None:
     stats = agent.stats()
     assert stats.parse_failures == 0
     assert stats.retries == 0
+    # No probe ran, so the commit guardrail cannot compare and the commit
+    # check is skipped entirely: zero oracle calls, zero overrides.
     assert stats.simulate_calls == 0
     assert stats.simulate_denied == 0
+    assert stats.guardrail_overrides == 0
 
 
 def test_turn_message_states_live_simulate_budget() -> None:
@@ -302,7 +338,9 @@ def test_unlimited_simulate_budget_never_denies() -> None:
     game, obs = _game_and_obs()
     assert agent.act(game, obs) == "0.05*x"
     stats = agent.stats()
-    assert stats.simulate_calls == 5
+    # 5 probes + the commit guardrail's check of the final candidate (M5.4:
+    # simulate_calls counts ALL oracle calls).
+    assert stats.simulate_calls == 6
     assert stats.simulate_denied == 0
     for call in agent._client.messages.calls[1:6]:
         tool_result = call["messages"][-1]["content"][0]
@@ -314,7 +352,8 @@ def test_tool_use_round_returns_simresult_fields() -> None:
     game, obs = _game_and_obs()
     assert agent.act(game, obs) == "0.05*x"
     stats = agent.stats()
-    assert stats.simulate_calls == 1
+    # 1 probe + the commit guardrail's check (M5.4 semantics).
+    assert stats.simulate_calls == 2
     assert stats.simulate_denied == 0
 
     second_call_messages = agent._client.messages.calls[1]["messages"]
@@ -378,8 +417,10 @@ def test_budget_denial_returns_error_and_does_not_delegate(
     assert agent.act(game, obs) == "0.05*x"
     stats = agent.stats()
     assert stats.simulate_calls == 3  # the explicit simulate_budget cap
-    assert stats.simulate_denied == 1
-    # The denied call never reached the pure oracle.
+    # 2 denials: the model's 4th probe AND the commit guardrail's check (the
+    # budget was already spent — the commit fires as-is, M5.4 degradation).
+    assert stats.simulate_denied == 2
+    # The denied calls never reached the pure oracle.
     assert delegated == ["0.05*x", "0.1*x", "0.15*x"]
 
     fifth_call_messages = agent._client.messages.calls[4]["messages"]
@@ -488,3 +529,107 @@ def test_telemetry_reports_termination_reason() -> None:
     assert result.nearest_miss is not None and result.nearest_miss >= 0
     assert result.miss_direction in {"high", "low"}
     assert result.stopped_at_x is not None
+
+
+# --- 9. commit guardrail (M5.4 Fix 1) ------------------------------------------
+#
+# The harness oracle-checks the committed expression through the SAME
+# BudgetedSimulator and fires the turn's best probed expression instead when
+# the commit is STRICTLY worse by _probe_score (ties go to the commit).
+# Board facts used below (deterministic seed 21, num_soldiers=2):
+# "0*x" dies on the muzzle rock: terrain, nearest_miss 34.725;
+# "1(x+18.117)" dies on the same rock, slightly closer: 34.698;
+# "-1.4117(x+18.117)" is a line through the muzzle that strikes the ALLY
+# (hit_teammate, the critical-failure rank).
+
+
+def test_probe_score_ordering() -> None:
+    """Lower = better: a teammate hit is NEVER preferred over a clean no-hit
+    (whatever its nearest_miss), reach ranks over distance, and unparseable
+    probes (all-None telemetry) rank worst."""
+    from agents.llm_agent import _probe_score
+    from agents.simulate_tool import SimResult
+
+    def res(**kwargs: Any) -> SimResult:
+        base: dict[str, Any] = {
+            "parseable": True,
+            "hit_enemy": False,
+            "hit_teammate": False,
+            "num_hits": 0,
+            "num_steps": 10,
+        }
+        base.update(kwargs)
+        return SimResult(**base)
+
+    clean_hit = res(hit_enemy=True, num_hits=1, nearest_miss=0.1, stop_reason="hit")
+    teammate_hit = res(hit_teammate=True, num_hits=1, nearest_miss=0.05, stop_reason="hit")
+    no_hit_far = res(nearest_miss=100.0, stop_reason="short")
+    no_hit_passed = res(nearest_miss=2.0, stop_reason="passed")
+    no_hit_short = res(nearest_miss=2.0, stop_reason="short")
+    unparseable = res(parseable=False, num_steps=0)
+
+    assert _probe_score(teammate_hit) > _probe_score(no_hit_far)
+    assert _probe_score(no_hit_passed) < _probe_score(no_hit_short)
+    assert _probe_score(clean_hit) < _probe_score(no_hit_far)
+    assert _probe_score(unparseable) == (1, 1, float("inf"))
+    assert _probe_score(no_hit_far) < _probe_score(unparseable)
+
+
+def test_guardrail_fires_a_strictly_better_probe_over_a_dead_commit() -> None:
+    """Probes ran (dead on the muzzle rock), the commit strikes a TEAMMATE —
+    the guardrail fires the probe instead and counts one override."""
+    agent = _agent([_tool_use("sim-1", "0*x"), _text("-1.4117(x+18.117)")])
+    game, obs = _seed21_game_and_obs()
+    assert agent.act(game, obs) == "0*x"
+    stats = agent.stats()
+    assert stats.guardrail_overrides == 1
+    assert stats.simulate_calls == 2  # probe + commit check
+    assert stats.simulate_denied == 0
+
+
+def test_guardrail_keeps_a_commit_at_least_as_good_as_the_best_probe() -> None:
+    """Ties and close calls go to the commit: the model's own word wins when
+    its candidate is not strictly worse than the best probe."""
+    agent = _agent([_tool_use("sim-1", "0*x"), _text("1(x+18.117)")])
+    game, obs = _seed21_game_and_obs()
+    assert agent.act(game, obs) == "1(x+18.117)"  # 34.698 beats the probe's 34.725
+    stats = agent.stats()
+    assert stats.guardrail_overrides == 0
+    assert stats.simulate_calls == 2
+
+
+def test_guardrail_commit_check_denied_on_budget_returns_commit() -> None:
+    """The commit check is only deniable on a finite budget: with the turn's
+    budget spent, the check raises and the commit fires as-is (documented
+    degradation), no crash, no override."""
+    agent = _agent([_tool_use("sim-1", "0*x"), _text("1(x+18.117)")], simulate_budget=1)
+    game, obs = _seed21_game_and_obs()
+    assert agent.act(game, obs) == "1(x+18.117)"
+    stats = agent.stats()
+    assert stats.guardrail_overrides == 0
+    assert stats.simulate_calls == 1  # the probe; the check was denied
+    assert stats.simulate_denied == 1  # the denied commit check
+
+
+def test_unrecoverable_failure_falls_back_to_the_best_probe() -> None:
+    """Probes ran, then the gateway killed every regeneration: the turn fires
+    the BEST probed expression (the guardrail's preference), not merely the
+    last one."""
+    agent = LLMAgent(
+        model="fake-model",
+        client=_DyingAfterClient([_tool_use("sim-1", "0*x"), _tool_use("sim-2", "1(x+18.117)")]),
+    )
+    game, obs = _seed21_game_and_obs()
+    assert agent.act(game, obs) == "1(x+18.117)"  # best (34.698), not 0*x (34.725)
+    stats = agent.stats()
+    assert stats.parse_failures == 1
+    assert stats.retries == 1
+    assert agent._client.messages.calls == 5  # 2 rounds + 3 attempts on the death
+
+
+def test_guardrail_override_flows_through_play_match() -> None:
+    """End-to-end: the runner merges the new counter into the match stats
+    (mirrors the simulate_calls merge test in test_eval.py)."""
+    agent = _agent([_tool_use("sim-1", "0*x"), _text("-1.4117(x+18.117)")])
+    result = play_match(21, agent, StraightShotAgent(), MatchConfig(num_soldiers=2, max_turns=2))
+    assert result.stats["llm:fake-model"].guardrail_overrides == 1

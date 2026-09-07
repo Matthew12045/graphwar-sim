@@ -137,6 +137,31 @@ def test_simulate_accounting_counters_merge_from_agent() -> None:
     assert result.stats["straight"].simulate_denied == 0
 
 
+def test_guardrail_overrides_merge_from_agent() -> None:
+    """M5.4: the commit guardrail's override counter merges like the other
+    agent-internal counters; agents without the guardrail contribute 0."""
+    from agents.base import Observation
+    from graphwar_sim import Game
+
+    class GuardedAgent:
+        """Reports a fixed guardrail override count (the M5.4 LLMAgent shape)."""
+
+        name = "guarded"
+
+        def __init__(self) -> None:
+            self._stats = AgentStats(simulate_calls=3, guardrail_overrides=1)
+
+        def act(self, game: Game, obs: Observation) -> str:
+            return "0*x"
+
+        def stats(self) -> AgentStats:
+            return self._stats
+
+    result = play_match(5, GuardedAgent(), StraightShotAgent(), _small_config())
+    assert result.stats["guarded"].guardrail_overrides == 1
+    assert result.stats["straight"].guardrail_overrides == 0
+
+
 # --- Plan / side balance -----------------------------------------------------
 
 

@@ -27,8 +27,16 @@ cross-turn memory):
   returns the repo's safe dud ``"0*x"`` (``eval/runner.py:227``,
   ``agents/baselines.py:57``).
 - ``stats()`` maps the counters the runner merges into the match stats
-  (``eval/runner.py``): parse_failures, retries, simulate_calls, and
-  simulate_denied (accumulated across turns).
+  (``eval/runner.py``): parse_failures, retries, simulate_calls,
+  simulate_denied, and guardrail_overrides (accumulated across turns).
+  ``simulate_calls`` counts ALL oracle calls — probes AND the commit
+  guardrail's check of the final candidate (M5.4; skipped when no probe ran).
+- M5.4 commit guardrail: a validated candidate is oracle-checked through the
+  same :class:`BudgetedSimulator` before it fires; when the turn's best
+  probed expression scores STRICTLY better (:func:`_probe_score` — teammate
+  hits rank worst, reach before distance, nearest_miss as the gradient) the
+  probe fires instead and ``guardrail_overrides`` increments. Ties go to the
+  commit.
 
 Known limitation (documented, deliberately not engineered around): ``name``
 is ``"llm:<model>"``, so a **mirror match** ``llm:X`` vs ``llm:X`` collides
@@ -261,6 +269,29 @@ def _sim_result_json(result: SimResult) -> str:
     )
 
 
+def _probe_score(result: SimResult) -> tuple[int, int, float]:
+    """The commit guardrail's comparison key — LOWER IS BETTER.
+
+    Rationale (M5.4): the first element ranks hits — a clean enemy hit is the
+    only acceptable kill, a TEAMMATE hit is a critical failure that must never
+    be preferred no matter how small its nearest_miss; the second ranks reach
+    — a shot that arrived at the enemy's x (``"hit"``/``"passed"``) dominates
+    one that died en route, because height is correctable but reach is the
+    hard part on terrain-walled boards; ``nearest_miss`` breaks ties as the
+    model's gradient. Unparseable probes carry all-None telemetry and land on
+    ``(1, 1, inf)`` — worst. Pure and deterministic: no game state, no RNG.
+    """
+    if result.hit_teammate:
+        hit_rank = 2
+    elif result.hit_enemy:
+        hit_rank = 0
+    else:
+        hit_rank = 1
+    reach_rank = 0 if result.stop_reason in ("hit", "passed") else 1
+    nearest = result.nearest_miss if result.nearest_miss is not None else float("inf")
+    return (hit_rank, reach_rank, nearest)
+
+
 def _response_text(response: Any) -> str:
     """All text blocks of a response, joined by newlines."""
     parts = [
@@ -394,6 +425,13 @@ class LLMAgent:
         # The last simulate-call expression this turn (the round-cap
         # fallback fires it when the model never emits a text commit).
         self._last_probe_expr: str | None = None
+        # The last probe's full telemetry (the commit nudge's echo, M5.4).
+        self._last_probe_result: SimResult | None = None
+        # The turn's BEST probed expression by _probe_score, tracked across
+        # the WHOLE turn (attempts share the conversation). The commit
+        # guardrail (M5.4) fires it when the committed candidate oracle-checks
+        # strictly worse. Ties keep the earlier probe.
+        self._best_probe: tuple[str, SimResult] | None = None
 
     def act(self, game: Game, obs: Observation) -> str:
         """Emit this turn's expression (centered world frame).
@@ -409,6 +447,8 @@ class LLMAgent:
         sim = BudgetedSimulator(game, budget=self._simulate_budget)
         sim.new_turn()
         self._last_probe_expr = None
+        self._last_probe_result = None
+        self._best_probe = None
         try:
             budget_text: int | str = "unlimited" if sim.unlimited else sim.remaining
             messages: list[dict[str, Any]] = [
@@ -419,7 +459,7 @@ class LLMAgent:
                 candidate, rounds_used = self._run_attempt(messages, sim, rounds_left)
                 rounds_left -= rounds_used
                 if candidate is not None:
-                    return candidate
+                    return self._guard_commit(candidate, sim)
                 if rounds_left <= 0:
                     break
             # Round cap hit without a text commit: fire the model's LAST
@@ -434,6 +474,11 @@ class LLMAgent:
             # accounted like the runner's defensive malformed-emission branch.
             self._stats.parse_failures += 1
             self._stats.retries += 1
+            # The guardrail's best-probe preference applies here too: the
+            # best probed expression dominates the merely-last one (and both
+            # beat the safe dud).
+            if self._best_probe is not None:
+                return self._best_probe[0]
             return self._last_probe_expr or SAFE_DUD
         finally:
             self._stats.simulate_calls += sim.calls_used
@@ -527,6 +572,29 @@ class LLMAgent:
             return None, used
         return None, used
 
+    def _guard_commit(self, candidate: str, sim: BudgetedSimulator) -> str:
+        """The commit guardrail (M5.4 Fix 1): oracle-check the committed
+        candidate through the SAME :class:`BudgetedSimulator` — one extra
+        oracle call, the same physics ``Game.fire`` is about to run — and fire
+        the turn's best probed expression instead when the commit is STRICTLY
+        worse by :func:`_probe_score`. Ties go to the commit (the model's own
+        word wins close calls). Skipped entirely when no probe ran: with no
+        best probe the check cannot change the outcome (the guardrail cannot
+        invent one). The check can only be denied on a finite simulate budget
+        (:class:`SimulateBudgetExhausted`; ``budget=None`` never denies) — the
+        documented degradation fires the commit as-is.
+        """
+        if self._best_probe is None:
+            return candidate
+        try:
+            commit_result = sim.simulate(candidate)
+        except SimulateBudgetExhausted:
+            return candidate
+        if _probe_score(self._best_probe[1]) < _probe_score(commit_result):
+            self._stats.guardrail_overrides += 1
+            return self._best_probe[0]
+        return candidate
+
     def _dispatch_tool_round(
         self,
         response: Any,
@@ -578,6 +646,13 @@ class LLMAgent:
                 )
                 continue
             self._last_probe_expr = expr
+            self._last_probe_result = result
+            # Track the turn's best probe across ALL attempts (parseable or
+            # not — an unparseable probe simply scores worst). Strictly
+            # better only: the earlier probe wins ties.
+            score = _probe_score(result)
+            if self._best_probe is None or score < _probe_score(self._best_probe[1]):
+                self._best_probe = (expr, result)
             tool_results.append(
                 {
                     "type": "tool_result",

@@ -289,6 +289,8 @@ def play_match(
         # M5.3: simulate-tool accounting (zero for agents without the wrapper).
         stats[agent.name].simulate_calls += internal.simulate_calls
         stats[agent.name].simulate_denied += internal.simulate_denied
+        # M5.4: commit guardrail overrides.
+        stats[agent.name].guardrail_overrides += internal.guardrail_overrides
 
     rung_counts: dict[str, dict[str, int]] = {}
     for agent in agents_by_team.values():

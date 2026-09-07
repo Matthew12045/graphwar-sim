@@ -65,6 +65,9 @@ class AgentMatchStats:
     # (byte-parity: AgentLeaderRow deliberately does not aggregate these yet).
     simulate_calls: int = 0  # delegated simulate-tool calls (wrapper-using agents)
     simulate_denied: int = 0  # over-budget calls the wrapper refused
+    # M5.4: turns where the commit guardrail fired the best probed expression
+    # over an oracle-known-worse commit (strictly-worse rule; ties -> commit).
+    guardrail_overrides: int = 0
     # M5.1 taxonomy counters (turn outcomes / suppression, not attempts).
     pass_unreachable: int = 0  # corridor-proven unreachable turns
     solver_failed: int = 0  # reachable but the ladder could not convert it

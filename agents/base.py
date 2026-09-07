@@ -81,12 +81,20 @@ class AgentStats:
     = the wrapper raised ``SimulateBudgetExhausted``); the M3 agents never
     call the oracle, so their counts are 0. Merged into the match stats by
     the runner's ``internal:`` block.
+
+    M5.4: ``simulate_calls`` counts ALL oracle calls — including the commit
+    guardrail's check of the final candidate (one extra call per committed
+    turn that had at least one probe; skipped when no probe ran).
+    ``guardrail_overrides`` counts turns where the guardrail fired the best
+    probed expression over an oracle-known-worse commit (strictly-worse rule,
+    ties go to the commit).
     """
 
     parse_failures: int = 0
     retries: int = 0
     simulate_calls: int = 0
     simulate_denied: int = 0
+    guardrail_overrides: int = 0
 
 
 @runtime_checkable
