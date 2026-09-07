@@ -83,17 +83,15 @@ _MAX_TOOL_ROUNDS_PER_TURN: int = 8
 # not from source.
 _COMMIT_ROUNDS: int = 2
 
-# max_tokens for every API call. Live gateway measurement (2026-09-06,
-# gateway.9arm.co / qwen3.8-27b-fp8): the model consumes its ENTIRE output
-# budget on hidden thinking (no prompt length changes that — even a 165-char
-# system prompt), at ~182 tok/s, and Cloudflare kills silent generations at
-# ~125s (~23k tokens). 128000 therefore dies EVERY round; 16384 is the
-# largest budget whose worst-case generation (~90s) fits the wall, and a
-# budget-exhausted round degrades to the correction-message path instead of
-# a crash. (User asked for 128k context; the wall makes it physically
-# impossible through this gateway — see PROGRESS_REPORT.txt §9.)
-# # TUNABLE — not from source.
-_MAX_OUTPUT_TOKENS: int = 16384
+# max_tokens for every API call — the model's full 128k context budget
+# (user-locked). History: at the DEFAULT reasoning effort (xhigh) the model
+# burned whatever budget it got on hidden thinking and died at the gateway's
+# ~125s Cloudflare wall, so 16384 was once the safe ceiling; with
+# reasoning_effort=medium (see below) the thinking is CAPPED, rounds
+# conclude in seconds-to-minutes, and the budget is pure headroom (measured:
+# 128000 accepted, round concluded in 10.7s / 1741 tokens). Streaming keeps
+# even the worst case inside the wall. # TUNABLE — not from source.
+_MAX_OUTPUT_TOKENS: int = 128000
 
 # Retries for transient gateway deaths on ONE API call (Cloudflare's ~120s
 # proxy read limit truncates long thinking generations: 524 non-streaming,

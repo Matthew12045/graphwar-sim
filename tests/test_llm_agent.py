@@ -323,7 +323,7 @@ def test_streaming_client_is_preferred_when_available() -> None:
     assert agent.act(game, obs) == "0.05*x"
     kwargs = agent._client.messages.stream_kwargs
     assert kwargs is not None
-    assert kwargs["max_tokens"] == 16384  # the largest budget under the gateway wall
+    assert kwargs["max_tokens"] == 128000  # the model's full context budget
     assert kwargs["system"] == _SYSTEM_PROMPT
     assert kwargs["tools"][0]["name"] == "simulate"
 
