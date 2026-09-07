@@ -125,10 +125,16 @@ def _is_retryable_api_error(exc: Exception) -> bool:
     return type(exc).__name__ in _RETRYABLE_API_ERROR_NAMES
 
 
-# Merged into every API call when thinking is disabled (see LLMAgent):
-# the 9arm gateway forwards these qwen chat-template kwargs to the backend;
-# real Anthropic APIs reject unknown body fields, hence the opt-in.
-_QWEN_NO_THINK_EXTRA_BODY: dict[str, Any] = {"chat_template_kwargs": {"enable_thinking": False}}
+# Reasoning effort for gateway-served reasoning models (litellm -> vLLM),
+# merged as ``extra_body`` on every call. Measured on gateway.9arm.co /
+# qwen3.8-27b-fp8 (2026-09-06): the DEFAULT effort (xhigh) thinks to the
+# ENTIRE output budget in ~7/8 rounds — conclusions ~1/8 and unpredictable —
+# so rounds die at the gateway's ~125s Cloudflare wall. "medium" (Claude
+# Code's CLAUDE_CODE_EFFORT_LEVEL) caps the thinking: rounds concluded in
+# 32-61s with valid tool calls (2/2). vLLM accepts xhigh (default) | medium
+# | low only. Sent ONLY through gateways: real Anthropic APIs reject
+# unknown body fields. # TUNABLE — not from source.
+_REASONING_EFFORT: str = "medium"
 
 
 # Error text for an over-budget simulate call (the loop's cost stop-signal).
@@ -337,22 +343,19 @@ class LLMAgent:
         model: str,
         max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
         client: Any | None = None,
-        disable_thinking: bool | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         self._model = model
         self.name = f"llm:{model}"
         self._max_attempts = max(1, max_attempts)
-        # Live gateway measurement (see _MAX_OUTPUT_TOKENS): the reasoning
-        # model burns its WHOLE output budget on hidden thinking and every
-        # generation dies at the gateway's ~125s wall. Disabling thinking
-        # (qwen chat-template kwarg, forwarded by the 9arm gateway via
-        # extra_body) made rounds conclude in <60s with valid tool calls.
-        # Real Anthropic APIs reject unknown body fields, so the kwarg is
-        # sent only when a gateway base_url is configured (auto) or when
-        # explicitly requested. # TUNABLE — not from source.
-        if disable_thinking is None:
-            disable_thinking = os.environ.get("ANTHROPIC_BASE_URL") is not None
-        self._disable_thinking = disable_thinking
+        # Live gateway measurement (see _REASONING_EFFORT): the default
+        # effort (xhigh) burns the whole output budget on hidden thinking
+        # and rounds die at the gateway's ~125s wall; "medium" caps it and
+        # rounds conclude reliably. Auto: apply through gateways only —
+        # real Anthropic APIs reject unknown body fields.
+        if reasoning_effort is None and os.environ.get("ANTHROPIC_BASE_URL"):
+            reasoning_effort = _REASONING_EFFORT
+        self._reasoning_effort = reasoning_effort
         # Fail at construction on a missing token — never mid-match.
         self._client = client if client is not None else _build_client()
         self._stats = AgentStats()
@@ -424,8 +427,8 @@ class LLMAgent:
         }
         if force_commit:
             kwargs["tool_choice"] = {"type": "none"}
-        if self._disable_thinking:
-            kwargs["extra_body"] = dict(_QWEN_NO_THINK_EXTRA_BODY)
+        if self._reasoning_effort is not None:
+            kwargs["extra_body"] = {"reasoning_effort": self._reasoning_effort}
         stream_factory = getattr(self._client.messages, "stream", None)
         for retry in range(_MAX_API_RETRIES + 1):
             try:

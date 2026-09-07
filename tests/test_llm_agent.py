@@ -328,20 +328,20 @@ def test_streaming_client_is_preferred_when_available() -> None:
     assert kwargs["tools"][0]["name"] == "simulate"
 
 
-def test_thinking_disabled_auto_with_gateway_env(
+def test_reasoning_effort_auto_with_gateway_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With ANTHROPIC_BASE_URL set (the 9arm gateway case) the qwen
-    thinking-disable kwarg is merged into every call."""
+    """With ANTHROPIC_BASE_URL set (the 9arm gateway case) the reasoning
+    effort (the measured fix for the budget-burn wall) rides every call."""
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.9arm.co")
     agent = _agent([_text("0*x")])
     game, obs = _game_and_obs()
     agent.act(game, obs)
     kwargs = agent._client.messages.calls[0]
-    assert kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert kwargs["extra_body"] == {"reasoning_effort": "medium"}
 
 
-def test_thinking_kept_for_real_anthropic(
+def test_reasoning_effort_absent_for_real_anthropic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Without a gateway base_url (real Anthropic) no extra_body is sent —
@@ -355,10 +355,10 @@ def test_thinking_kept_for_real_anthropic(
     forced = LLMAgent(
         model="fake-model",
         client=_FakeClient([_text("0*x")]),
-        disable_thinking=True,
+        reasoning_effort="low",
     )
     forced.act(game, obs)
-    assert "extra_body" in forced._client.messages.calls[0]
+    assert forced._client.messages.calls[0]["extra_body"] == {"reasoning_effort": "low"}
 
 
 def test_missing_auth_env_vars_raise_at_construction(
