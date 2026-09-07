@@ -29,6 +29,10 @@ Not thread-safe by the core: a single match is held behind a module lock.
 NOTE: ``/api/agent_turn`` calls ``agent.act`` INSIDE that lock, so an LLM
 side blocks other requests for the length of one API round-trip loop —
 acceptable for this single-user UI (M5.4 risk note), documented here.
+Slice C cancellation: ``/api/new_game`` sets a module-level cancel event
+BEFORE waiting on the lock, which unwinds any in-flight agent turn (its
+``TurnCancelled`` becomes a 409 "aborted") so a New Match / Quit mid-LLM-turn
+answers promptly; the fresh match clears the flag once it holds the lock.
 """
 
 from __future__ import annotations
@@ -37,6 +41,8 @@ import math
 import random
 import threading
 import time
+from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +51,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from agents import Agent, hit_team_counts, observe
+from agents import Agent, TurnCancelled, hit_team_counts, observe
 from eval.runner import _classify, _peek_solver_rung, make_agent
 from graphwar_sim import TEAM1, TEAM2, config
 from graphwar_sim.parser import MalformedFunction, PolishNotationFunction
@@ -66,6 +72,44 @@ _team_modes: dict[int, str] = {}
 _team_agents: dict[int, Agent] = {}
 _turns_played: int = 0
 _max_turns: int | None = None
+# Slice C cancellation: set by /api/new_game BEFORE it acquires the lock (an
+# in-flight agent turn holds the lock for the length of its LLM loop — setting
+# first is what lets the turn unwind and free it). The fresh match clears the
+# flag only AFTER acquiring the lock, so a 400 (bad team modes) can never
+# leave it stuck set and kill future turns. Never nested with any other lock.
+_cancel_requested = threading.Event()
+
+# Slice B live activity feed: a module-global event ring with its own small
+# lock (deliberately NOT the game lock — /api/activity must answer while
+# agent_turn holds the game lock; the two locks are never nested). Event ids
+# are monotonic across matches so a client's `since` cursor survives a ring
+# reset; the ring itself clears per match.
+_ACTIVITY_CAP: int = 500  # # TUNABLE — not from source.
+_activity: deque[dict[str, Any]] = deque(maxlen=_ACTIVITY_CAP)
+_activity_lock = threading.Lock()
+# Ids start at 1: `since=0` (the client's initial cursor) must return
+# everything, so the first event needs id > 0.
+_activity_next_id: int = 1
+
+
+def _activity_append(kind: str, payload: dict[str, Any], agent: str) -> None:
+    """Append one feed event with a monotonic id (the sink LLMAgent calls)."""
+    global _activity_next_id
+    with _activity_lock:
+        _activity.append({"id": _activity_next_id, "agent": agent, "kind": kind, **payload})
+        _activity_next_id += 1
+
+
+def _activity_reset() -> None:
+    """Clear the ring for a fresh match (ids stay monotonic)."""
+    global _activity_next_id
+    with _activity_lock:
+        _activity.clear()
+
+
+def _make_sink(agent_name: str) -> Callable[[str, dict[str, Any]], None]:
+    """The per-agent event sink closure for :meth:`LLMAgent.set_event_sink`."""
+    return lambda kind, payload: _activity_append(kind, payload, agent_name)
 
 
 # --- request bodies ---------------------------------------------------------
@@ -81,6 +125,11 @@ class NewGameBody(BaseModel):
     num_soldiers: int | None = None
     team_modes: _TeamModesBody | None = None
     max_turns: int | None = None
+
+
+class SetModesBody(BaseModel):
+    team1: str | None = None
+    team2: str | None = None
 
 
 class FireBody(BaseModel):
@@ -226,12 +275,18 @@ def _agent_for_mode(mode: str) -> Agent:
 
     Reuses :func:`eval.runner.make_agent` directly (the roster mapping is
     NOT duplicated here): unknown names raise ``ValueError``; an
-    ``llm:<model>`` entry raises ``RuntimeError`` at construction when no
-    auth env var is set. Both surface as a clean 400 from ``new_game``.
+    ``llm:<model>`` / ``hybrid:<model>`` entry raises ``RuntimeError`` at
+    construction when no auth env var is set, and an unknown persona raises
+    ``ValueError`` (M5.4 grammar). All surface as a clean 400 from
+    ``new_game``. Slice C: the server's module-level cancel event is injected
+    so Quit / New Match pressed mid-LLM-turn unwinds promptly; baselines
+    ignore it.
     """
     if mode == "llm:":
         raise ValueError("llm: mode needs a model name (llm:<model>)")
-    return make_agent(mode, seed=0)
+    if mode == "hybrid:":
+        raise ValueError("hybrid: mode needs a model name (hybrid:<model>)")
+    return make_agent(mode, seed=0, cancel_requested=_cancel_requested.is_set)
 
 
 def _shooter_info(game: Game) -> dict[str, Any]:
@@ -283,7 +338,16 @@ def new_game(body: NewGameBody | None = None) -> dict[str, Any] | JSONResponse:
             status_code=400,
             content={"error": "bad_max_turns", "detail": "max_turns must be >= 1"},
         )
+    # Slice C: request any in-flight agent turn to unwind BEFORE waiting for
+    # the lock it holds. The cheap validation above runs first so a 400 never
+    # sets (and then strands) the flag.
+    _cancel_requested.set()
     with _lock:
+        # Only clear once the in-flight turn is gone (we hold the lock): a
+        # 400 below must not leave the flag stuck set.
+        _cancel_requested.clear()
+        # Slice B: the activity ring resets per match.
+        _activity_reset()
         try:
             agents_by_team: dict[int, Agent] = {}
             for team_id, mode in ((TEAM1, mode_team1), (TEAM2, mode_team2)):
@@ -313,7 +377,56 @@ def new_game(body: NewGameBody | None = None) -> dict[str, Any] | JSONResponse:
 def state() -> dict[str, Any]:
     with _lock:
         game = _lazy_game()
-        return {"seed": _seed, "team_modes": _team_modes_wire(), **_board_json(game)}
+        return {
+            "seed": _seed,
+            "team_modes": _team_modes_wire(),
+            "max_turns": _max_turns,
+            "turns_played": _turns_played,
+            **_board_json(game),
+        }
+
+
+@app.post("/api/set_modes", response_model=None)
+def set_modes(body: SetModesBody | None = None) -> dict[str, Any] | JSONResponse:
+    """Swap one or both sides' drivers mid-match (D1: applies immediately).
+
+    Missing keys leave that side unchanged. Board, ``_turns_played``,
+    ``_max_turns``, and the activity ring are untouched (ring ids stay
+    monotonic). Agents are constructed EAGERLY before any swap, so an unknown
+    mode/persona or a missing auth token fails as a clean 400 with the
+    previous drivers intact — the same ``bad_team_modes`` shape as
+    ``new_game``. No cancel flag is set: no in-flight turn is disturbed; a
+    swap requested mid-turn takes effect on the NEXT turn.
+    """
+    global _team_modes, _team_agents
+    mode_team1 = body.team1 if body is not None else None
+    mode_team2 = body.team2 if body is not None else None
+    with _lock:
+        game = _lazy_game()
+        try:
+            staged: dict[int, Agent | None] = {}
+            for team_id, mode in ((TEAM1, mode_team1), (TEAM2, mode_team2)):
+                if mode is None:
+                    continue
+                if mode != "human":
+                    staged[team_id] = _agent_for_mode(mode)
+                else:
+                    staged[team_id] = None
+        except (ValueError, RuntimeError) as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "bad_team_modes", "detail": str(exc)},
+            )
+        for team_id, mode in ((TEAM1, mode_team1), (TEAM2, mode_team2)):
+            if mode is None:
+                continue
+            _team_modes[team_id] = mode
+            agent = staged[team_id]
+            if agent is None:
+                _team_agents.pop(team_id, None)
+            else:
+                _team_agents[team_id] = agent
+        return {"team_modes": _team_modes_wire(), "board": _board_json(game)}
 
 
 @app.post("/api/fire")
@@ -352,9 +465,18 @@ def fire(body: FireBody) -> JSONResponse:
                     "seed": _seed,
                 }
             )
+        team = game.state.current_team()
+        if team.team in _team_agents:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "agent_turn",
+                    "detail": "The current side is agent-driven — use Step/Play.",
+                    "board": _board_json(game),
+                },
+            )
 
         shooter_info = _shooter_info(game)
-        team = game.state.current_team()
         shooter = team.current_soldier()
         inverted = team.team == config.TEAM2
         start_angle = _display_start_angle(body.func_str, shooter, inverted)
@@ -444,9 +566,29 @@ def agent_turn() -> dict[str, Any] | JSONResponse:
         shooter = team.current_soldier()
         inverted = team.team == config.TEAM2
 
+        # Slice B: route both agents' feed events into the activity ring.
+        # Agents are shared module-global instances; the game lock makes the
+        # injection single-writer safe. Non-LLM agents (no set_event_sink)
+        # are skipped by duck-typing.
+        for side_agent in _team_agents.values():
+            setter = getattr(side_agent, "set_event_sink", None)
+            if callable(setter):
+                setter(_make_sink(side_agent.name))
+
         obs = observe(game)
         solver_rung = _peek_solver_rung(agent)
-        expr = agent.act(game, obs)
+        try:
+            expr = agent.act(game, obs)
+        except TurnCancelled:
+            # Slice C: the turn unwound before any shot — the game is
+            # untouched (the cancel always fires before play_turn, so no
+            # partial turn is possible). Consume the request so a queued turn
+            # cannot inherit a stale cancel flag.
+            _cancel_requested.clear()
+            return JSONResponse(
+                status_code=409,
+                content={"error": "aborted", "detail": "The turn was cancelled."},
+            )
 
         t0 = time.perf_counter()
         try:
@@ -480,6 +622,21 @@ def agent_turn() -> dict[str, Any] | JSONResponse:
             "solver_rung": solver_rung,
         }
         return JSONResponse(content=payload)
+
+
+@app.get("/api/activity")
+def activity(since: int = 0) -> dict[str, Any]:
+    """Serve the live LLM activity feed events after ``since`` (Slice B).
+
+    Takes ONLY the small activity lock — never the game lock — so the feed
+    keeps answering while ``agent_turn`` holds the game lock through an LLM
+    round-trip loop. ``next`` is the cursor for the next poll: the last
+    served event's id, or ``since`` when nothing new exists.
+    """
+    with _activity_lock:
+        events = [event for event in _activity if event["id"] > since]
+        next_id = events[-1]["id"] if events else since
+        return {"events": events, "next": next_id}
 
 
 # Static frontend last, so /api/* routes match first. html=True serves

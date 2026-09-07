@@ -95,17 +95,18 @@ body {
   padding: 0 4px;
 }
 
-/* --- buttons (fire.png/quit.png redrawn: pill face pixel-measured at
-        152x32, 1px #3f3f3f border, sage gradient #D5E0D4->#A1BBA0 with a
-        dark-green outer glow, orange #FFAE00 bold text + dark shadow) --- */
+/* --- buttons (fire.png/quit.png redrawn: face pixel-measured at 152x32,
+        1px #3f3f3f border, pale sage gradient #E3EAE2->#CBDACB (docs/
+        UI_GROUND_TRUTH.md §6, sampled from rsc/fire.png), orange #FFAE00
+        bold text + dark shadow; flat face, no outer glow like the reference) --- */
 .gbutton {
   position: absolute;
   width: 152px;
   height: 32px;
   border: 1px solid #3f3f3f;
-  border-radius: 16px;
-  background: linear-gradient(#d5e0d4, #a1bba0);
-  box-shadow: 0 0 6px 3px rgba(96, 136, 94, 0.55);
+  border-radius: 10px;
+  background: linear-gradient(#e3eae2, #cbdacb);
+  box-shadow: none;
   color: #ffae00;
   font-family: inherit;
   font-weight: bold;
@@ -113,13 +114,14 @@ body {
   text-shadow: 2px 2px 0 #3f3f3f;
   cursor: pointer;
 }
-.gbutton:hover { filter: brightness(1.06); }
-.gbutton:active { filter: brightness(0.94); }
+.gbutton:hover { filter: brightness(1.04); }
+.gbutton:active { filter: brightness(0.96); }
 .gbutton:disabled { filter: grayscale(0.7) brightness(0.95); cursor: default; }
 
 #fire      { left: 139px; top: 515px; }
-#new-match { left: 300px; top: 517px; width: 118px; height: 24px;
-             border-radius: 12px; font-size: 13px; text-shadow: 1px 1px 0 #3f3f3f; }
+/* Same 152x32 face as Fire/Quit; two-word label needs a smaller font to
+   stay on one line. */
+#new-match { left: 314px; top: 515px; font-size: 18px; white-space: nowrap; }
 #quit      { left: 314px; top: 560px; }
 
 /* --- turn log (TEXTBOXGAME (485,480,300,75), repurposed chat) --- */
@@ -190,12 +192,64 @@ body {
 
 .hidden { display: none; }
 
+/* --- thinking bubble (reference-style popup next to the shooter) --- */
+#think-bubble {
+  position: absolute;
+  max-width: 260px;
+  max-height: 120px;
+  overflow-y: auto;
+  background: #fff;
+  border: 2px solid var(--think-color, #000);
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 14px;
+  padding: 6px 8px;
+  z-index: 5;
+  pointer-events: none;
+  box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+}
+#think-bubble.hidden { display: none; }
+#think-bubble .think-name {
+  font-weight: bold;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#think-bubble .think-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #222;
+}
+#think-bubble .think-commit {
+  font-weight: bold;
+  color: #000;
+}
+#think-bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  margin-left: -8px;
+  bottom: -10px;
+  border-width: 10px 8px 0 8px;
+  border-style: solid;
+  border-color: var(--think-color, #000) transparent transparent transparent;
+}
+#think-bubble.below::after {
+  bottom: auto;
+  top: -10px;
+  border-width: 0 8px 10px 8px;
+  border-color: transparent transparent var(--think-color, #000) transparent;
+}
+
 /* --- M5.4 spectator controls (below the 800x600 game box; same panel look
         as the overlay: #efefe6 face, 2px #3f3f3f border, rounded) --- */
 #controls {
   width: 800px;
+  max-width: calc(100vw - 32px);
   margin: 10px auto 16px;
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: stretch;
 }
@@ -205,10 +259,14 @@ body {
   border-radius: 8px;
   padding: 8px 12px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+  row-gap: 8px;
 }
-#setup-panel { flex: 1; }
+#setup-panel { flex: 1; min-width: 0; }
+#playback-bar { flex: 0 0 auto; }
 .panel label {
   font-size: 13px;
   font-weight: bold;
@@ -222,15 +280,27 @@ body {
   border: 1px solid #7a8a99; /* Java TextField border, pixel-sampled */
   background: #fff;
 }
-#model-team1, #model-team2 { width: 150px; }
-#max-turns { width: 56px; }
-.setup-group { display: flex; align-items: center; gap: 6px; }
-.setup-hint { font-size: 11px; font-style: italic; color: #6b6b5b; margin-left: auto; }
+#model-team1, #model-team2 {
+  width: 120px;
+  max-width: 38vw;
+  flex: 0 1 120px;
+  min-width: 0;
+}
+#max-turns { width: 56px; flex: 0 0 auto; }
+.panel select { max-width: 100%; }
+.setup-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.setup-hint {
+  font-size: 11px;
+  font-style: italic;
+  color: #6b6b5b;
+  flex-basis: 100%;
+  text-align: right;
+}
 .panel .gbutton {
   position: static; /* .gbutton is absolutely positioned inside #app */
   width: 96px;
   height: 26px;
-  border-radius: 13px;
+  border-radius: 8px;
   font-size: 14px;
   text-shadow: 1px 1px 0 #3f3f3f;
 }

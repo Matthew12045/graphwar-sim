@@ -27,6 +27,8 @@ from typing import Any, cast
 from agents import (
     Agent,
     AgentStats,
+    Bot67Agent,
+    HybridAgent,
     LLMAgent,
     RandomAgent,
     SolverAgent,
@@ -50,6 +52,9 @@ _AGENT_FACTORIES: dict[str, Callable[[int], Agent]] = {
     "solver": lambda _seed: SolverAgent(),
     "random": lambda seed: RandomAgent(seed=seed),
     "straight": lambda _seed: StraightShotAgent(),
+    # The 67 bot: draws only 67 (roster-selectable, not in the default
+    # round-robin — it would only add a guaranteed-dud column).
+    "67": lambda _seed: Bot67Agent(),
 }
 
 # Seed layout: pair p, match m, side s in {0, 1} -> root + p * 1000 + m * 2 + s.
@@ -291,6 +296,19 @@ def play_match(
         stats[agent.name].simulate_denied += internal.simulate_denied
         # M5.4: commit guardrail overrides.
         stats[agent.name].guardrail_overrides += internal.guardrail_overrides
+        # M5.4 persona harness: verifier verdicts (free-oracle checks, kept
+        # separate from the round outcome on the leaderboard).
+        stats[agent.name].constraint_checks += internal.constraint_checks
+        stats[agent.name].constraint_violations += internal.constraint_violations
+        stats[agent.name].magician_partials += internal.magician_partials
+        # M5.5 HybridAgent telemetry (own leaderboard section).
+        stats[agent.name].schema_errors += internal.schema_errors
+        stats[agent.name].waypoints_applied += internal.waypoints_applied
+        stats[agent.name].waypoints_dropped += internal.waypoints_dropped
+        stats[agent.name].ccf_certified += internal.ccf_certified
+        stats[agent.name].ccf_uncertified += internal.ccf_uncertified
+        stats[agent.name].ccf_infeasible += internal.ccf_infeasible
+        stats[agent.name].ccf_unreachable += internal.ccf_unreachable
 
     rung_counts: dict[str, dict[str, int]] = {}
     for agent in agents_by_team.values():
@@ -337,22 +355,52 @@ def _classify(
     return ShotOutcome.HIT if enemy_hits else ShotOutcome.MISS
 
 
-def make_agent(name: str, seed: int) -> Agent:
+def _split_persona(rest: str) -> tuple[str, str | None]:
+    """Split an optional ``@persona`` suffix off a mode's model string.
+
+    The LAST ``@`` wins, so a hypothetical model name containing ``@`` keeps
+    its full text (no current model name has one). Empty halves are a
+    ``ValueError`` (surfaced as a clean 400 by the UI's eager construction).
+    """
+    if "@" not in rest:
+        return rest, None
+    model, _, persona = rest.rpartition("@")
+    if not model:
+        raise ValueError(f"missing model before '@persona' in: {rest}")
+    if not persona:
+        raise ValueError(f"missing persona after '@' in: {rest}")
+    return model, persona
+
+
+def make_agent(
+    name: str, seed: int, *, cancel_requested: Callable[[], bool] | None = None
+) -> Agent:
     """Build one fresh agent instance from a roster entry.
 
     Exact-string factory lookup first (``_AGENT_FACTORIES``); otherwise an
     ``"llm:<model>"`` entry constructs :class:`~agents.llm_agent.LLMAgent`
-    with ``model=<rest>`` (the part after the FIRST colon; ``seed`` is unused
-    — LLM agents are deterministic given the model). The ``llm:`` prefix is
-    opt-in: ``DEFAULT_ROSTER`` stays network-free, and a ``llm:`` entry
-    raises at construction when no auth env var is set (fail fast, never
-    mid-match). Unknown names raise ``ValueError``.
+    and a ``"hybrid:<model>"`` entry constructs
+    :class:`~agents.hybrid_agent.HybridAgent` (M5.5), each with
+    ``model=<rest>`` (the part after the FIRST colon) and optionally a
+    ``"@<persona>"`` suffix with ``persona`` one of
+    :data:`agents.personas.PERSONAS` (unknown persona -> ``ValueError``).
+    ``seed`` is unused — LLM agents are deterministic given the model. The
+    ``llm:``/``hybrid:`` prefixes are opt-in: ``DEFAULT_ROSTER`` stays
+    network-free, and such an entry raises at construction when no auth env
+    var is set (fail fast, never mid-match). Unknown names raise
+    ``ValueError``. ``cancel_requested`` (Slice C) is forwarded to the
+    LLM/hybrid constructors only; baselines ignore it (``None`` keeps eval
+    paths byte-identical).
     """
     factory = _AGENT_FACTORIES.get(name)
     if factory is not None:
         return factory(seed)
     if name.startswith("llm:"):
-        return LLMAgent(model=name.split(":", 1)[1])
+        model, persona = _split_persona(name.split(":", 1)[1])
+        return LLMAgent(model=model, persona=persona, cancel_requested=cancel_requested)
+    if name.startswith("hybrid:"):
+        model, persona = _split_persona(name.split(":", 1)[1])
+        return HybridAgent(model=model, persona=persona, cancel_requested=cancel_requested)
     raise ValueError(f"unknown agent in roster: {name}")
 
 
@@ -599,6 +647,49 @@ def _render_markdown(
         for agent_name, rung_counts in solver_rungs.items():
             desc = ", ".join(f"{k}={v}" for k, v in rung_counts.items())
             lines.append(f"- {agent_name}: {desc}")
+        lines.append("")
+
+    persona_rows = [row for row in rows if row.constraint_checks > 0]
+    if persona_rows:
+        # M5.4.1: "did not play its own game" is a DIFFERENT failure from
+        # losing the round — this section is deliberately separate from the
+        # win/hit-rate table above.
+        lines.append("## Persona constraint telemetry (separate from outcomes)")
+        lines.append("")
+        lines.append("| Agent | Checks | Violations | Magician partials |")
+        lines.append("|---|---|---|---|")
+        for row in persona_rows:
+            lines.append(
+                f"| {row.agent} | {row.constraint_checks} | "
+                f"{row.constraint_violations} | {row.magician_partials} |"
+            )
+        lines.append("")
+
+    hybrid_rows = [
+        row
+        for row in rows
+        if row.schema_errors
+        or row.waypoints_applied
+        or row.waypoints_dropped
+        or row.ccf_certified
+        or row.ccf_uncertified
+        or row.ccf_infeasible
+        or row.ccf_unreachable
+    ]
+    if hybrid_rows:
+        # M5.5.9: planning value lives HERE — the applied-vs-dropped waypoint
+        # ratio per agent, and the cert outcome mix — never inside the
+        # win/hit-rate table or the solver-failure counters.
+        lines.append("## Hybrid planner telemetry (separate from outcomes)")
+        lines.append("")
+        lines.append("| Agent | Applied | Dropped | Cert | Uncert | Infeas | Unreach |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for row in hybrid_rows:
+            lines.append(
+                f"| {row.agent} | {row.waypoints_applied} | {row.waypoints_dropped} | "
+                f"{row.ccf_certified} | {row.ccf_uncertified} | {row.ccf_infeasible} | "
+                f"{row.ccf_unreachable} |"
+            )
         lines.append("")
 
     lines.append("## Per-match log")

@@ -14,9 +14,11 @@ pin the API contract:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 
 import pytest
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from agents.observation import observe
@@ -235,9 +237,10 @@ def test_agent_turn_plays_deterministic_solver(client: TestClient) -> None:
     assert body["agent"] == "random"
     assert body["board"]["turns_played"] == 2
 
-    # /api/fire still drives the human sides (team1 is up again, human).
+    # TEAM1 (solver) is up again — /api/fire is gated for agent sides (G2).
     fire = client.post("/api/fire", json={"func_str": "x/2"})
-    assert fire.status_code == 200, fire.text
+    assert fire.status_code == 409
+    assert fire.json()["error"] == "agent_turn"
 
 
 def test_agent_turn_on_human_side_is_409(client: TestClient) -> None:
@@ -310,3 +313,375 @@ def test_bad_max_turns_is_400(client: TestClient) -> None:
     response = client.post("/api/new_game", json={"max_turns": 0})
     assert response.status_code == 400
     assert response.json()["error"] == "bad_max_turns"
+
+
+# --- Slice E: persona / hybrid mode passthrough -------------------------------
+
+
+def test_persona_mode_round_trips_through_new_game(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`llm:<model>@<persona>` constructs eagerly (fail fast) and echoes the
+    full wire string back so the UI can round-trip it."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-token")
+    response = client.post(
+        "/api/new_game",
+        json={"seed": 21, "team_modes": {"team1": "llm:some-model@sniper", "team2": "human"}},
+    )
+    assert response.status_code == 200
+    assert response.json()["team_modes"] == {
+        "team1": "llm:some-model@sniper",
+        "team2": "human",
+    }
+    state = client.get("/api/state").json()
+    assert state["team_modes"]["team1"] == "llm:some-model@sniper"
+
+
+def test_unknown_persona_is_a_400(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-token")
+    response = client.post(
+        "/api/new_game",
+        json={"team_modes": {"team1": "llm:some-model@gremlin", "team2": "human"}},
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"] == "bad_team_modes"
+    assert "unknown persona" in body["detail"]
+
+
+def test_bare_hybrid_mode_is_a_400(client: TestClient) -> None:
+    response = client.post(
+        "/api/new_game",
+        json={"team_modes": {"team1": "hybrid:", "team2": "human"}},
+    )
+    assert response.status_code == 400
+    assert "hybrid: mode needs a model name" in response.json()["detail"]
+
+
+# --- Slice C: cancellation ---------------------------------------------------
+#
+# A blocked fake agent holds the module lock inside /api/agent_turn;
+# /api/new_game sets the cancel event BEFORE waiting on the lock, the agent
+# unwinds (TurnCancelled -> 409 aborted), and the fresh match builds. These
+# call the endpoint functions directly: a real cross-request hang test needs
+# two concurrent callers, which TestClient's portal does not model.
+
+
+def test_new_game_cancels_a_blocked_agent_turn() -> None:
+    import threading
+    import time
+
+    import ui.server as server_module
+    from agents import AgentStats, TurnCancelled
+    from ui.server import NewGameBody, agent_turn, new_game
+
+    created = new_game(NewGameBody(seed=21))
+    assert isinstance(created, dict)
+
+    entered = threading.Event()
+
+    class _BlockedAgent:
+        name = "blocked"
+
+        def act(self, game: Game, obs: object) -> str:
+            entered.set()
+            deadline = time.monotonic() + 5.0
+            while not server_module._cancel_requested.is_set():
+                if time.monotonic() > deadline:
+                    raise AssertionError("cancel event never set")
+                time.sleep(0.005)
+            raise TurnCancelled()
+
+        def stats(self) -> AgentStats:
+            return AgentStats()
+
+    # In-place swap: the agent turn reads _team_agents under the lock, and
+    # the cancelling new_game below replaces the dict wholesale afterwards.
+    server_module._team_agents[1] = _BlockedAgent()  # TEAM1
+
+    results: dict[str, object] = {}
+    thread = threading.Thread(target=lambda: results.update(turn=agent_turn()))
+    thread.start()
+    assert entered.wait(timeout=5.0), "the fake agent never entered act()"
+
+    response = new_game(NewGameBody())  # sets the event pre-lock, then builds
+    thread.join(timeout=5.0)
+    assert not thread.is_alive(), "agent_turn never unwound"
+
+    turn_response = results["turn"]
+    assert isinstance(turn_response, JSONResponse)
+    assert turn_response.status_code == 409
+    assert json.loads(turn_response.body)["error"] == "aborted"
+
+    assert isinstance(response, dict)  # the fresh match built
+    assert response["team_modes"] == {"team1": "human", "team2": "human"}
+    assert response["turns_played"] == 0  # the aborted turn fired nothing
+    assert not server_module._cancel_requested.is_set()  # flag consumed, not stuck
+
+
+def test_failed_agent_construction_does_not_stick_the_cancel_flag(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The handover's race: new_game sets the event pre-lock; a 400 (bad team
+    modes) must still leave it CLEAR for future turns."""
+    import ui.server as server_module
+
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    response = client.post(
+        "/api/new_game",
+        json={"team_modes": {"team1": "llm:some-model", "team2": "human"}},
+    )
+    assert response.status_code == 400
+    assert not server_module._cancel_requested.is_set()
+
+
+# --- Slice B: live activity feed -------------------------------------------------
+
+
+def test_activity_serves_events_while_the_game_lock_is_held() -> None:
+    """The feed endpoint answers from its OWN lock while a blocked fake agent
+    holds the game lock inside agent_turn — the polling feed never stalls."""
+    import threading
+    import time
+
+    import ui.server as server_module
+    from agents import AgentStats, TurnCancelled
+    from ui.server import NewGameBody, activity, agent_turn, new_game
+
+    new_game(NewGameBody(seed=21))
+    assert activity(since=0)["events"] == []  # the ring reset for the match
+
+    entered = threading.Event()
+
+    class _FeedingBlockedAgent:
+        name = "feeder"
+
+        def set_event_sink(self, sink: object) -> None:
+            self._sink = sink
+
+        def act(self, game: Game, obs: object) -> str:
+            self._sink("tool_call", {"expr": "0*x"})  # type: ignore[operator]
+            entered.set()
+            deadline = time.monotonic() + 5.0
+            while not server_module._cancel_requested.is_set():
+                if time.monotonic() > deadline:
+                    raise AssertionError("cancel event never set")
+                time.sleep(0.005)
+            raise TurnCancelled()
+
+        def stats(self) -> AgentStats:
+            return AgentStats()
+
+    server_module._team_agents[1] = _FeedingBlockedAgent()  # TEAM1
+
+    results: dict[str, object] = {}
+    thread = threading.Thread(target=lambda: results.update(turn=agent_turn()))
+    thread.start()
+    assert entered.wait(timeout=5.0), "the fake agent never entered act()"
+
+    # The game lock is HELD by agent_turn here; /api/activity still answers.
+    payload = activity(since=0)
+    assert len(payload["events"]) == 1
+    event = payload["events"][0]
+    assert event["kind"] == "tool_call"
+    assert event["agent"] == "feeder"
+    assert event["expr"] == "0*x"
+    assert payload["next"] == event["id"]
+    since_cursor = payload["next"]
+
+    new_game(NewGameBody())  # cancels the blocked turn and builds a fresh match
+    thread.join(timeout=5.0)
+    assert not thread.is_alive()
+
+    # The `since` cursor skips old events; the ring reset on the fresh match
+    # keeps ids monotonic.
+    after = activity(since=since_cursor)
+    assert after["events"] == []
+    assert after["next"] == since_cursor
+
+
+def test_activity_endpoint_via_testclient(client: TestClient) -> None:
+    """The HTTP surface: empty for a fresh match, shape {"events", "next"}."""
+    response = client.get("/api/activity", params={"since": 0})
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"events": [], "next": 0}
+
+
+# --- Demo driver swap + thinking bubble plan (G1/G2/G4/G6) ----------------------
+
+
+def test_set_modes_swaps_mid_match_preserving_board(client: TestClient) -> None:
+    """G1: 200-swap mid-match leaves board/turns intact and drivers live."""
+    client.post(
+        "/api/new_game",
+        json={"seed": 21, "team_modes": {"team1": "human", "team2": "human"}},
+    )
+    before_fire = client.post("/api/fire", json={"func_str": "x/2"}).json()
+    assert before_fire["board"]["turns_played"] == 1
+    assert before_fire["board"]["current_turn"] == 1
+    circles_before = before_fire["board"]["circles"]
+
+    response = client.post("/api/set_modes", json={"team1": "solver"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["team_modes"] == {"team1": "solver", "team2": "human"}
+    assert body["board"]["circles"] == circles_before
+    assert body["board"]["turns_played"] == 1
+    assert body["board"]["current_turn"] == 1
+    assert body["board"]["max_turns"] is None
+
+    # Missing keys leave that side unchanged; the swapped driver is live:
+    # TEAM1 is solver-driven but it is TEAM2 (human) up, so agent_turn 409s
+    # as human_turn; after a human shot TEAM1 is up and fire is gated.
+    state = client.get("/api/state").json()
+    assert state["team_modes"] == {"team1": "solver", "team2": "human"}
+    human_fire = client.post("/api/fire", json={"func_str": "x/2"})
+    assert human_fire.status_code == 200, human_fire.text
+    assert human_fire.json()["board"]["current_turn"] == 0
+    gated = client.post("/api/fire", json={"func_str": "x/2"})
+    assert gated.status_code == 409
+    assert gated.json()["error"] == "agent_turn"
+
+
+def test_set_modes_400_leaves_drivers_intact(client: TestClient) -> None:
+    """G1: 400 revert semantics — a bad swap changes nothing."""
+    client.post("/api/new_game", json={"seed": 21})
+    response = client.post("/api/set_modes", json={"team1": "nope"})
+    assert response.status_code == 400
+    assert response.json()["error"] == "bad_team_modes"
+    assert client.get("/api/state").json()["team_modes"] == {
+        "team1": "human",
+        "team2": "human",
+    }
+
+    bare = client.post("/api/set_modes", json={"team1": "hybrid:"})
+    assert bare.status_code == 400
+    assert "hybrid: mode needs a model name" in bare.json()["detail"]
+    assert client.get("/api/state").json()["team_modes"] == {
+        "team1": "human",
+        "team2": "human",
+    }
+
+
+def test_fire_during_agent_turn_is_409(client: TestClient) -> None:
+    """G2: /api/fire on an agent-driven side is a 409, turn untouched."""
+    client.post(
+        "/api/new_game",
+        json={"seed": 21, "team_modes": {"team1": "solver", "team2": "human"}},
+    )
+    before = client.get("/api/state").json()
+    assert before["current_turn"] == 0
+    response = client.post("/api/fire", json={"func_str": "x/2"})
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "agent_turn"
+    assert "Step/Play" in body["detail"]
+    assert body["board"]["current_turn"] == 0
+    assert body["board"]["turns_played"] == 0
+    after = client.get("/api/state").json()
+    assert after["current_turn"] == 0
+    assert after["turns_played"] == 0
+
+    # The human side still fires normally when it is up.
+    client.post(
+        "/api/new_game",
+        json={"seed": 21, "team_modes": {"team1": "human", "team2": "solver"}},
+    )
+    ok_fire = client.post("/api/fire", json={"func_str": "x/2"})
+    assert ok_fire.status_code == 200, ok_fire.text
+
+
+def test_state_includes_max_turns(client: TestClient) -> None:
+    """G6: /api/state carries the turn budget (additive top-level + board)."""
+    client.post("/api/new_game", json={"seed": 21, "max_turns": 30})
+    state = client.get("/api/state").json()
+    assert state["max_turns"] == 30
+    assert state["turns_played"] == 0
+    # The board payload travels flat (same shape as new_game's spread board).
+    assert state["teams"] and state["current_turn"] == 0
+
+
+def test_agent_for_mode_carries_cancel_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G4: llm:/hybrid: agents built through _agent_for_mode carry the server
+    cancel callback; baselines carry none. White-box on privates matches repo
+    test style."""
+    import ui.server as server_module
+    from ui.server import _agent_for_mode
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-token")
+    server_module._cancel_requested.clear()
+    llm_agent = _agent_for_mode("llm:some-model")
+    assert getattr(llm_agent, "_cancel_requested", None) is not None
+    assert llm_agent._cancel_requested() is False  # type: ignore[operator]
+    hybrid_agent = _agent_for_mode("hybrid:some-model")
+    assert getattr(hybrid_agent, "_cancel_requested", None) is not None
+
+    baseline = _agent_for_mode("solver")
+    assert getattr(baseline, "_cancel_requested", None) is None
+
+    server_module._cancel_requested.set()
+    try:
+        assert llm_agent._cancel_requested() is True  # type: ignore[operator]
+    finally:
+        server_module._cancel_requested.clear()
+
+
+def test_server_cancel_event_fires_a_scripted_llm_turn() -> None:
+    """G4: the server event mid-act unwinds a scripted LLM turn (TurnCancelled)."""
+    import ui.server as server_module
+    from agents import TurnCancelled
+    from agents.llm_agent import LLMAgent
+    from agents.observation import observe
+    from graphwar_sim.state import Game
+
+    flag_set_during_create = {"fired": False}
+
+    class _TextBlock:
+        def __init__(self, text: str) -> None:
+            self.type = "text"
+            self.text = text
+
+    class _ToolUseBlock:
+        def __init__(self) -> None:
+            self.type = "tool_use"
+            self.id = "sim-1"
+            self.name = "simulate"
+            self.input = {"expr": "0*x"}
+
+    class _ScriptedResponse:
+        def __init__(self, tool: bool) -> None:
+            self.stop_reason = "tool_use" if tool else "end_turn"
+            self.content = [_ToolUseBlock()] if tool else [_TextBlock("0*x")]
+
+    class _FlippingMessages:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def create(self, **kwargs: object) -> _ScriptedResponse:
+            self.calls += 1
+            # The cancel arrives mid-turn: the next between-rounds check fires.
+            server_module._cancel_requested.set()
+            flag_set_during_create["fired"] = True
+            return _ScriptedResponse(tool=True)
+
+    class _FlippingClient:
+        def __init__(self) -> None:
+            self.messages = _FlippingMessages()
+
+    server_module._cancel_requested.clear()
+    try:
+        agent = LLMAgent(
+            model="fake-model",
+            client=_FlippingClient(),  # type: ignore[arg-type]
+            cancel_requested=server_module._cancel_requested.is_set,
+        )
+        game = Game.create(21)
+        with pytest.raises(TurnCancelled):
+            agent.act(game, observe(game))
+        assert flag_set_during_create["fired"] is True
+    finally:
+        server_module._cancel_requested.clear()

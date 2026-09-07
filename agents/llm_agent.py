@@ -7,9 +7,14 @@ cross-turn memory):
   REAL frame — centered world, shooter facing right, the auto vertical
   offset of ``graphwar_sim.physics.process_function_range`` (the frame
   contract of :class:`~agents.base.Observation`) — and the REAL
-  :class:`~agents.simulate_tool.SimResult` fields. Persona style prompts are
-  OUT of scope (the separate personas workstream,
-  ``The_bridge_nobody_wrote_down.md``).
+  :class:`~agents.simulate_tool.SimResult` fields. An optional **persona**
+  (``persona="<id>"``, one of :data:`agents.personas.PERSONAS`) appends its
+  STYLE block after the byte-identical core and attaches the persona's
+  machine verifier (M5.4.1): every turn's FIRED expression is verified and
+  the verdict lands in ``rung_history`` (``PASS`` / ``CONSTRAINT_VIOLATION``
+  / ``MAGICIAN_FULL`` / ``MAGICIAN_PARTIAL(n,m)``) plus the
+  ``constraint_*`` stat counters. Verifier oracle calls are FREE (the pure
+  :func:`agents.simulate_tool.simulate`, never the agent's budget).
 - the **per-turn user message** serializes the observation verbatim (the
   frame every other agent reads — coordinates are NOT re-derived, shifted,
   or re-centered) plus the live simulate budget ("simulate calls remaining:
@@ -37,12 +42,27 @@ cross-turn memory):
   hits rank worst, reach before distance, nearest_miss as the gradient) the
   probe fires instead and ``guardrail_overrides`` increments. Ties go to the
   commit.
+- Cancellation (Slice C): the optional ``cancel_requested`` callback (a
+  module-level :class:`threading.Event` in the UI server) is checked between
+  API rounds and between stream deltas; a set callback raises
+  :class:`TurnCancelled` — deliberately a ``BaseException`` so ``act``'s
+  catch-all ``except Exception`` cannot convert a cancel into a dud shot.
+  Eval passes no callback (the default never fires).
+- Live activity feed (Slice B): the optional ``on_event`` callback (or a
+  per-turn sink via :meth:`set_event_sink`) receives
+  ``("round"|"text"|"tool_call"|"tool_result"|"guardrail"|"persona"|"commit"|"delta",
+  payload)`` events as the turn progresses — the UI server routes them into
+  its activity ring for the polling feed. Delta events forward the real SDK
+  stream's ``content_block_delta`` text/thinking chunks (duck-typed, guarded;
+  the gateway may expose no thinking at all, and the non-streaming test
+  fakes get no deltas — both documented no-ops). A broken sink never crashes
+  a turn.
 
 Known limitation (documented, deliberately not engineered around): ``name``
-is ``"llm:<model>"``, so a **mirror match** ``llm:X`` vs ``llm:X`` collides
-in ``play_match``'s per-agent stats dict (keyed by agent name); round-robin
-rosters cannot produce that pair. The UI match log carries the full name, so
-spectators can still tell the sides apart.
+is ``"llm:<model>"`` (or ``"llm:<model>@<persona>"``), so a **mirror match**
+``llm:X`` vs ``llm:X`` collides in ``play_match``'s per-agent stats dict
+(keyed by agent name); round-robin rosters cannot produce that pair, and
+persona-suffixed rosters de-collide naturally (the suffix rides the name).
 
 The ``anthropic`` SDK is an OPTIONAL dependency
 (``pip install 'graphwar-sim[llm]'``) and is imported lazily inside
@@ -62,12 +82,16 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable, Iterable
+from contextlib import suppress
 from typing import Any
 
 from graphwar_sim import Game, PolishNotationFunction, config
 from graphwar_sim.parser import MalformedFunction
 
 from .base import AgentStats, Observation
+from .personas import PERSONAS
+from .personas.verifiers import VERIFIERS, VerdictKind, VerifierContext, VerifierVerdict
 from .simulate_budget import BudgetedSimulator, SimulateBudgetExhausted
 from .simulate_tool import SimResult
 
@@ -129,6 +153,18 @@ def _is_retryable_api_error(exc: Exception) -> bool:
     ``_RETRYABLE_API_ERROR_NAMES``) — name-based so the module needs no
     import from the optional SDK or its transport."""
     return type(exc).__name__ in _RETRYABLE_API_ERROR_NAMES
+
+
+class TurnCancelled(BaseException):
+    """The turn's cancel callback fired (Slice C).
+
+    ``BaseException`` ON PURPOSE: :meth:`LLMAgent.act`'s catch-all
+    ``except Exception`` must not convert a cancel into a safe-dud shot — a
+    cancelled turn unwinds the whole emission loop and leaves the game
+    untouched (the caller — the UI server's ``agent_turn`` — turns it into a
+    409 "aborted"). Eval passes no cancel callback, so this never fires
+    there.
+    """
 
 
 # Reasoning effort for gateway-served reasoning models (litellm -> vLLM),
@@ -457,9 +493,22 @@ class LLMAgent:
         reasoning_effort: str | None = None,
         simulate_budget: int | None = None,
         tool_rounds: int | None = None,
+        persona: str | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
+        if persona is not None and persona not in PERSONAS:
+            raise ValueError(f"unknown persona: {persona!r} (known: {', '.join(sorted(PERSONAS))})")
         self._model = model
-        self.name = f"llm:{model}"
+        self._persona = PERSONAS[persona] if persona is not None else None
+        self.name = f"llm:{model}" + (f"@{persona}" if persona is not None else "")
+        # The core prompt stays byte-identical; a persona appends its STYLE
+        # block after it (plan A2).
+        self._system_prompt = (
+            _SYSTEM_PROMPT
+            if self._persona is None
+            else f"{_SYSTEM_PROMPT}\n\n{self._persona.style_text}"
+        )
         self._max_attempts = max(1, max_attempts)
         # User-locked live default (M5.4): UNLIMITED simulate calls per turn
         # — the model probes as much as it wants; the turn message states
@@ -471,6 +520,16 @@ class LLMAgent:
         # commit, an attempts exhaustion, or this cap). None -> module
         # default.
         self._tool_rounds = tool_rounds if tool_rounds is not None else _MAX_TOOL_ROUNDS_PER_TURN
+        # Slice C cancellation: a callback polled between API rounds (the UI
+        # server passes its module-level threading.Event.is_set; eval passes
+        # nothing). Checked between retries in _create and between rounds in
+        # _run_attempt; mid-stream checks ride the Slice B delta iteration.
+        self._cancel_requested = cancel_requested
+        # Slice B live feed: the per-turn event sink (the server injects one
+        # per agent_turn via set_event_sink — agents are shared instances).
+        self._on_event = on_event
+        # Turn-level API round counter for the ("round", ...) feed events.
+        self._round_counter: int = 0
         # Live gateway measurement (see _REASONING_EFFORT): the default
         # effort (xhigh) burns the whole output budget on hidden thinking
         # and rounds die at the gateway's ~125s wall; "medium" caps it and
@@ -492,6 +551,14 @@ class LLMAgent:
         # guardrail (M5.4) fires it when the committed candidate oracle-checks
         # strictly worse. Ties keep the earlier probe.
         self._best_probe: tuple[str, SimResult] | None = None
+        # The turn's last assistant text block (the professor verifier's
+        # structural check reads it; the emission loop otherwise discards it).
+        self._last_assistant_text: str | None = None
+        # Per-turn persona verdicts (rung strings). Only maintained with a
+        # persona attached, so persona-less agents keep the runner's
+        # rung_counts output unchanged (M5.4.2 / plan A4).
+        if self._persona is not None:
+            self.rung_history: list[str] = []
 
     def act(self, game: Game, obs: Observation) -> str:
         """Emit this turn's expression (centered world frame).
@@ -503,31 +570,47 @@ class LLMAgent:
         wrapper's contract (the first call closes the empty construction
         turn — harmless; counters stay correct); its ledger counters are
         folded into :meth:`stats` after every turn.
+
+        With a persona attached, the FIRED expression (after the commit
+        guardrail's possible override, and on every degraded path too) is
+        run through the persona's machine verifier (M5.4.1): the verdict
+        appends to ``rung_history`` and updates the ``constraint_*``
+        counters. A verifier bug degrades to "no verdict" — it must never
+        crash the match.
         """
         sim = BudgetedSimulator(game, budget=self._simulate_budget)
         sim.new_turn()
         self._last_probe_expr = None
         self._last_probe_result = None
         self._best_probe = None
+        self._last_assistant_text = None
+        self._round_counter = 0
+        expr = SAFE_DUD
         try:
             budget_text: int | str = "unlimited" if sim.unlimited else sim.remaining
             messages: list[dict[str, Any]] = [
                 {"role": "user", "content": _turn_message(obs, budget_text)}
             ]
             rounds_left = self._tool_rounds
+            candidate: str | None = None
             for _attempt in range(self._max_attempts):
-                candidate, rounds_used = self._run_attempt(messages, sim, rounds_left)
+                found, rounds_used = self._run_attempt(messages, sim, rounds_left)
                 rounds_left -= rounds_used
-                if candidate is not None:
-                    return self._guard_commit(candidate, sim)
+                if found is not None:
+                    candidate = found
+                    break
                 if rounds_left <= 0:
                     break
-            # Round cap hit without a text commit: fire the model's LAST
-            # probed expression — it chose it through real simulate feedback,
-            # which beats the safe dud. (The gateway ignores
-            # tool_choice "none", so a forced text commit cannot be relied
-            # on; this fallback guarantees the probing still pays off.)
-            return self._last_probe_expr or SAFE_DUD
+            if candidate is not None:
+                expr = self._guard_commit(candidate, sim)
+            else:
+                # Round cap hit without a text commit: fire the model's LAST
+                # probed expression — it chose it through real simulate
+                # feedback, which beats the safe dud. (The gateway ignores
+                # tool_choice "none", so a forced text commit cannot be
+                # relied on; this fallback guarantees the probing still pays
+                # off.)
+                expr = self._last_probe_expr or SAFE_DUD
         except Exception:  # noqa: BLE001 - the match must never crash on one turn
             # Unrecoverable after the API retries (e.g. the gateway killed
             # every regeneration): degrade this turn to the safe dud,
@@ -538,16 +621,116 @@ class LLMAgent:
             # best probed expression dominates the merely-last one (and both
             # beat the safe dud).
             if self._best_probe is not None:
-                return self._best_probe[0]
-            return self._last_probe_expr or SAFE_DUD
+                expr = self._best_probe[0]
+            else:
+                expr = self._last_probe_expr or SAFE_DUD
         finally:
             self._stats.simulate_calls += sim.calls_used
             self._stats.simulate_denied += sim.denied_used
+        self._persona_verdict(expr, game, obs)
+        self._emit("commit", {"expr": expr})
+        return expr
 
     def stats(self) -> AgentStats:
         return self._stats
 
+    def set_event_sink(self, sink: Callable[[str, dict[str, Any]], None] | None) -> None:
+        """Attach (or detach) the per-turn activity sink (Slice B).
+
+        The UI server calls this on its shared agent instances right before
+        ``act()`` — the game lock makes the injection single-writer safe.
+        Passing ``None`` detaches.
+        """
+        self._on_event = sink
+
+    def _persona_verdict(self, expr: str, game: Game, obs: Observation) -> VerifierVerdict | None:
+        """Run the attached persona's machine verifier on the FIRED
+        expression (M5.4.1). Appends the verdict's rung string to
+        ``rung_history`` (so ``eval.runner._peek_solver_rung`` and the UI
+        ``[rung: ...]`` display work unchanged) and updates the
+        ``constraint_*`` counters. Returns ``None`` when no persona is
+        attached or the verifier itself failed (a verifier bug degrades to
+        "no verdict" — it must never crash the match). The verifier's
+        oracle calls are FREE: they go through the pure
+        ``agents.simulate_tool.simulate`` inside the verifier, never the
+        agent's ``BudgetedSimulator``."""
+        if self._persona is None:
+            return None
+        verifier = VERIFIERS.get(self._persona.verifier)
+        if verifier is None:  # pragma: no cover - manifest test pins the registry
+            return None
+        try:
+            verdict = verifier(
+                expr,
+                game,
+                obs,
+                VerifierContext(assistant_text=self._last_assistant_text or ""),
+            )
+        except Exception:  # noqa: BLE001 - a verifier bug must never crash a match
+            return None
+        self._stats.constraint_checks += 1
+        if verdict.kind is VerdictKind.VIOLATION:
+            self._stats.constraint_violations += 1
+        elif verdict.kind is VerdictKind.MAGICIAN_PARTIAL:
+            self._stats.magician_partials += 1
+        self.rung_history.append(verdict.rung)
+        self._emit(
+            "persona",
+            {
+                "verdict": verdict.rung,
+                "reason": verdict.reason,
+                "constraint": self._persona.constraint_type,
+            },
+        )
+        return verdict
+
     # -- internals ------------------------------------------------------------
+
+    def _emit(self, kind: str, payload: dict[str, Any]) -> None:
+        """Forward one feed event to the sink (Slice B). A broken sink is
+        swallowed — the feed is observational and must never crash a turn."""
+        if self._on_event is None:
+            return
+        with suppress(Exception):
+            self._on_event(kind, payload)
+
+    def _check_cancel(self) -> None:
+        """Raise :class:`TurnCancelled` when the cancel callback is set (a
+        no-op without one — the eval default)."""
+        if self._cancel_requested is not None and self._cancel_requested():
+            raise TurnCancelled()
+
+    def _forward_stream_deltas(self, stream: Any) -> None:
+        """Best-effort: iterate a REAL SDK stream and forward its
+        ``content_block_delta`` text/thinking chunks as ``("delta", ...)``
+        feed events (Slice B).
+
+        Duck-typed on :class:`collections.abc.Iterable`: the real SDK stream
+        is iterable (raw events); the test fakes only expose
+        ``get_final_message`` and are not — a documented no-op there. The
+        gateway may hide thinking entirely (no thinking deltas) — equally a
+        no-op. The cancel check runs per delta batch: mid-round cancellation
+        at seconds granularity (Slice C).
+        """
+        if not isinstance(stream, Iterable):
+            return
+        try:
+            for event in stream:
+                self._check_cancel()
+                if getattr(event, "type", "") != "content_block_delta":
+                    continue
+                delta = getattr(event, "delta", None)
+                delta_type = getattr(delta, "type", "")
+                if delta_type == "text_delta":
+                    self._emit("delta", {"kind": "text", "text": getattr(delta, "text", "")})
+                elif delta_type == "thinking_delta":
+                    self._emit(
+                        "delta", {"kind": "thinking", "text": getattr(delta, "thinking", "")}
+                    )
+        except TurnCancelled:
+            raise
+        except Exception:  # noqa: BLE001 - a stream-surface mismatch is a no-op
+            return
 
     def _create(self, messages: list[dict[str, Any]], force_commit: bool = False) -> Any:
         """One API round-trip: streaming when the client supports it.
@@ -568,7 +751,7 @@ class LLMAgent:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": _MAX_OUTPUT_TOKENS,
-            "system": _SYSTEM_PROMPT,
+            "system": self._system_prompt,
             "tools": [_SIMULATE_TOOL],
             "messages": messages,
         }
@@ -578,9 +761,11 @@ class LLMAgent:
             kwargs["extra_body"] = {"reasoning_effort": self._reasoning_effort}
         stream_factory = getattr(self._client.messages, "stream", None)
         for retry in range(_MAX_API_RETRIES + 1):
+            self._check_cancel()  # between (re)tries — a cancel beats a retry
             try:
                 if callable(stream_factory):
                     with stream_factory(**kwargs) as stream:
+                        self._forward_stream_deltas(stream)
                         return stream.get_final_message()
                 return self._client.messages.create(**kwargs)
             except Exception as exc:  # noqa: BLE001 - see _is_retryable_api_error
@@ -609,9 +794,18 @@ class LLMAgent:
         """
         used = 0
         while used < rounds_left:
+            self._check_cancel()  # between rounds (and before the first)
             force_commit = rounds_left - used <= _COMMIT_ROUNDS
+            self._round_counter += 1
+            self._emit("round", {"n": self._round_counter, "force_commit": force_commit})
             response = self._create(messages, force_commit=force_commit)
             used += 1
+            # Retain the turn's last assistant text (the professor verifier's
+            # structural input; thinking-only rounds leave it untouched).
+            text = _response_text(response)
+            if text:
+                self._last_assistant_text = text
+                self._emit("text", {"text": text})
             if response.stop_reason == "tool_use":
                 self._dispatch_tool_round(
                     response, sim, messages, commit_warning=rounds_left - used <= _COMMIT_ROUNDS
@@ -652,7 +846,9 @@ class LLMAgent:
             return candidate
         if _probe_score(self._best_probe[1]) < _probe_score(commit_result):
             self._stats.guardrail_overrides += 1
+            self._emit("guardrail", {"fired": True, "expr": self._best_probe[0]})
             return self._best_probe[0]
+        self._emit("guardrail", {"fired": False, "expr": candidate})
         return candidate
 
     def _dispatch_tool_round(
@@ -693,6 +889,7 @@ class LLMAgent:
                     }
                 )
                 continue
+            self._emit("tool_call", {"expr": expr})
             try:
                 result = sim.simulate(expr)
             except SimulateBudgetExhausted:
@@ -704,6 +901,7 @@ class LLMAgent:
                         "is_error": True,
                     }
                 )
+                self._emit("tool_result", {"denied": True, "expr": expr})
                 continue
             self._last_probe_expr = expr
             self._last_probe_result = result
@@ -719,6 +917,23 @@ class LLMAgent:
                     "tool_use_id": tool_use_id,
                     "content": _sim_result_json(result),
                 }
+            )
+            self._emit(
+                "tool_result",
+                {
+                    "denied": False,
+                    "expr": expr,
+                    "hit_enemy": result.hit_enemy,
+                    "hit_teammate": result.hit_teammate,
+                    "nearest_miss": (
+                        round(result.nearest_miss, 3) if result.nearest_miss is not None else None
+                    ),
+                    "miss_direction": result.miss_direction,
+                    "stopped_at_x": (
+                        round(result.stopped_at_x, 2) if result.stopped_at_x is not None else None
+                    ),
+                    "stop_reason": result.stop_reason,
+                },
             )
         if commit_warning:
             text = (
@@ -746,4 +961,4 @@ class LLMAgent:
         )
 
 
-__all__ = ["LLMAgent"]
+__all__ = ["LLMAgent", "TurnCancelled"]

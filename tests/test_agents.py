@@ -202,6 +202,42 @@ def test_no_enemies_falls_back_to_safe_dud() -> None:
     assert "0" in expr or "x" in expr
 
 
+def test_bot67_draws_only_67() -> None:
+    """The 67 bot emits the literal ``67`` on every turn, whatever the board:
+    parseable, deterministic, and — via the auto vertical offset that routes
+    ANY constant through the muzzle — a horizontal shot at the shooter's own
+    height (it kills only an enemy lined up at that height)."""
+    from agents import Bot67Agent
+
+    agent = Bot67Agent()
+    assert agent.name == "67"
+    for seed in (1, 21, 5):
+        game = Game.create(seed, num_soldiers=2)
+        for _turn in range(3):
+            if game.finished():
+                break
+            expr = agent.act(game, observe(game))
+            assert expr == "67"
+            PolishNotationFunction(expr)  # parseable through the real parser
+            game.fire(expr)
+            game.state.advance_turn()
+    stats: AgentStats = agent.stats()
+    assert stats.parse_failures == 0
+    assert stats.retries == 0
+
+
+def test_bot67_round_trips_through_the_roster_factory() -> None:
+    """Roster entry ``"67"`` builds the bot (exact factory lookup, like the
+    other baselines)."""
+    from eval.runner import make_agent
+
+    agent = make_agent("67", seed=0)
+    assert agent.name == "67"
+    assert (
+        agent.act(Game.create(5, num_soldiers=2), observe(Game.create(5, num_soldiers=2))) == "67"
+    )
+
+
 # --- Parse-failure / retry logging -------------------------------------------
 
 

@@ -43,10 +43,13 @@ var modeTeam1Sel = document.getElementById("mode-team1");
 var modeTeam2Sel = document.getElementById("mode-team2");
 var modelTeam1Input = document.getElementById("model-team1");
 var modelTeam2Input = document.getElementById("model-team2");
+var personaTeam1Sel = document.getElementById("persona-team1");
+var personaTeam2Sel = document.getElementById("persona-team2");
 var maxTurnsInput = document.getElementById("max-turns");
 var playPauseBtn = document.getElementById("play-pause");
 var stepBtn = document.getElementById("step");
 var speedSel = document.getElementById("speed");
+var thinkBubble = document.getElementById("think-bubble");
 
 var board = null;
 var seed = null;
@@ -67,10 +70,240 @@ var gameOver = false;
 // (eval's MatchConfig 100 is a batch number).
 var BASE_INTER_TURN_DELAY = 700; // ms between agent turns at 1x
 var DEFAULT_LLM_MODEL = "qwen3.8-27b-fp8"; // the 9arm gateway model
+var DEFAULT_MAX_TURNS = "30"; // mirrors index.html's setup default
+var ACTIVITY_POLL_MS = 800; // live LLM feed poll interval while a turn runs
+var LOG_CHILD_CAP = 400; // cap on log children (# TUNABLE)
 var teamModes = { team1: "human", team2: "human" };
 var playing = false;
 var playTimer = null; // setTimeout handle for the next agent turn
 var speed = 1; // scales the inter-turn delay only (BASE / speed)
+// Slice C: bumped by every newGame()/quit; a fetch response started under an
+// older epoch is discarded (the newer match owns the board).
+var epoch = 0;
+
+// --- Slice B: live LLM activity feed -----------------------------------------
+var activitySince = 0;
+var activityTimer = null;
+var deltaLine = null; // the growing line fed by ("delta", ...) events
+var deltaAgent = null; // the agent prefix the growing line was opened with
+
+// --- Thinking bubble (G5: LLM/hybrid turns only, reference-style popup) -------
+var THINK_LINE_CAP = 6; // keep the last ~6 lines (# TUNABLE)
+var thinkActive = false;
+var thinkLines = []; // [{text, commit}] compact bubble body lines
+
+function isLLMMode(mode) {
+  return mode.indexOf("llm:") === 0 || mode.indexOf("hybrid:") === 0;
+}
+
+function openThinkBubble() {
+  if (!board || !board.shooter || !isLLMMode(currentSideMode())) {
+    hideThinkBubble();
+    return;
+  }
+  thinkActive = true;
+  thinkLines = [];
+  renderThinkBubble();
+  thinkBubble.classList.remove("hidden");
+  positionThinkBubble();
+}
+
+function hideThinkBubble() {
+  thinkActive = false;
+  thinkLines = [];
+  if (thinkBubble) thinkBubble.classList.add("hidden");
+}
+
+function appendThinkLine(text, commit) {
+  if (!thinkActive) return;
+  thinkLines.push({ text: text, commit: !!commit });
+  while (thinkLines.length > THINK_LINE_CAP) thinkLines.shift();
+  renderThinkBubble();
+}
+
+function renderThinkBubble() {
+  if (!thinkBubble || !board || !board.shooter) return;
+  var shooter = board.shooter;
+  thinkBubble.innerHTML = "";
+  thinkBubble.style.setProperty("--think-color", shooter.color);
+  var name = document.createElement("div");
+  name.className = "think-name";
+  name.style.color = shooter.color;
+  name.textContent = shooter.label;
+  thinkBubble.appendChild(name);
+  for (var i = 0; i < thinkLines.length; i++) {
+    var line = document.createElement("div");
+    line.className = thinkLines[i].commit ? "think-commit" : "think-line";
+    line.textContent = thinkLines[i].text;
+    thinkBubble.appendChild(line);
+  }
+  thinkBubble.scrollTop = thinkBubble.scrollHeight;
+}
+
+function showThinkCommit(expr) {
+  if (!thinkActive) return;
+  thinkLines = [{ text: "f(x) = " + expr, commit: true }];
+  renderThinkBubble();
+}
+
+function positionThinkBubble() {
+  if (!thinkBubble || thinkBubble.classList.contains("hidden")) return;
+  if (!board || !board.shooter) return;
+  var cur = soldierPos(board.shooter.player_index, board.shooter.soldier_index);
+  var appX = 15 + cur.x;
+  var appY = 15 + cur.y;
+  // Same flip rule as drawNameLabel: boxY < 0 → below the soldier.
+  var boxY = cur.y - 15 - 2 * SOLDIER_R;
+  var below = boxY < 0;
+  thinkBubble.classList.toggle("below", below);
+  var h = thinkBubble.offsetHeight || 80;
+  var w = thinkBubble.offsetWidth || 200;
+  var left = appX - w / 2;
+  if (left < 8) left = 8;
+  if (left + w > 792) left = 792 - w;
+  var top = below ? appY + 20 : appY - h - 18;
+  if (top < 2) top = 2;
+  if (top + h > 598) top = 598 - h;
+  thinkBubble.style.left = left + "px";
+  thinkBubble.style.top = top + "px";
+}
+
+function fetchActivity() {
+  return fetch("/api/activity?since=" + activitySince)
+    .then(function (res) {
+      return res.json();
+    })
+    .then(function (data) {
+      renderActivity(data.events || []);
+      if (typeof data.next === "number") activitySince = data.next;
+    })
+    .catch(function () {}); // the feed is observational; never block a turn
+}
+
+function startActivityPoll() {
+  stopActivityPoll();
+  activityTimer = setInterval(fetchActivity, ACTIVITY_POLL_MS);
+}
+
+function stopActivityPoll() {
+  if (activityTimer !== null) {
+    clearInterval(activityTimer);
+    activityTimer = null;
+  }
+}
+
+// Drain the tail once the turn response has landed (the final commit/persona
+// events are already in the ring by then).
+function drainActivity() {
+  fetchActivity();
+  closeDeltaLine();
+}
+
+function closeDeltaLine() {
+  deltaLine = null;
+  deltaAgent = null;
+}
+
+function capLogChildren() {
+  while (logBox.children.length > LOG_CHILD_CAP) {
+    logBox.removeChild(logBox.firstChild);
+  }
+}
+
+function feedLine(agent, text) {
+  logLine([
+    { cls: "system", color: "#777", text: "[" + agent + "] " + text },
+  ]);
+  capLogChildren();
+}
+
+function renderActivity(events) {
+  for (var i = 0; i < events.length; i++) {
+    var ev = events[i];
+    if (ev.kind === "delta") {
+      // Growing line: deltas append; the agent prefix is fixed at creation.
+      // Honesty constraint (measured): thinking_delta never streams and text
+      // arrives as one lump per block — the bubble shows the round wait state
+      // plus real landed events only, never fake streaming.
+      if (deltaLine === null || deltaAgent !== ev.agent) {
+        closeDeltaLine();
+        deltaAgent = ev.agent;
+        deltaLine = document.createElement("div");
+        var prefix = document.createElement("span");
+        prefix.className = "system";
+        prefix.style.color = "#777";
+        prefix.textContent = "[" + ev.agent + "] ";
+        deltaLine.appendChild(prefix);
+        var body = document.createElement("span");
+        body.className = "system";
+        body.style.color = "#999";
+        deltaLine.appendChild(body);
+        deltaLine._body = body;
+        logBox.appendChild(deltaLine);
+      }
+      deltaLine._body.textContent += ev.text;
+      logBox.scrollTop = logBox.scrollHeight;
+      capLogChildren();
+      continue;
+    }
+    closeDeltaLine();
+    if (ev.kind === "round") {
+      var roundText = "round " + ev.n + (ev.force_commit ? " (forced commit)" : "");
+      feedLine(ev.agent, roundText);
+      appendThinkLine("thinking… round " + ev.n, false);
+    } else if (ev.kind === "text") {
+      var snippet = ev.text.length > 300 ? ev.text.slice(0, 300) + "…" : ev.text;
+      var flat = snippet.replace(/\s+/g, " ").trim();
+      feedLine(ev.agent, flat);
+      appendThinkLine(flat, false);
+    } else if (ev.kind === "tool_call") {
+      feedLine(ev.agent, "simulate(" + ev.expr + ")");
+      // Bubble shows one line per tool_result (call + telemetry combined).
+    } else if (ev.kind === "tool_result") {
+      var resultText = ev.denied
+        ? "simulate denied (budget spent)"
+        : "→ " +
+          "nearest_miss=" +
+          ev.nearest_miss +
+          ", miss_direction=" +
+          ev.miss_direction +
+          ", stopped_at_x=" +
+          ev.stopped_at_x +
+          ", stop_reason=" +
+          ev.stop_reason;
+      feedLine(ev.agent, resultText);
+      if (ev.denied) {
+        appendThinkLine("simulate denied (budget spent)", false);
+      } else {
+        appendThinkLine("simulate(" + ev.expr + ") → " + ev.nearest_miss + "/" + ev.stop_reason, false);
+      }
+    } else if (ev.kind === "guardrail") {
+      var guardText = ev.fired
+        ? "guardrail fired the better probe: " + ev.expr
+        : "guardrail: commit stands: " + ev.expr;
+      feedLine(ev.agent, guardText);
+      appendThinkLine(guardText, false);
+    } else if (ev.kind === "persona") {
+      var personaText = "[persona " + ev.constraint + "] " + ev.verdict;
+      feedLine(ev.agent, personaText);
+      appendThinkLine(personaText, false);
+    } else if (ev.kind === "plan") {
+      feedLine(ev.agent, "plan " + ev.target + " (" + ev.n_waypoints + " waypoints)");
+      appendThinkLine("plan " + ev.target + " (" + ev.n_waypoints + " waypoints)", false);
+    } else if (ev.kind === "solve") {
+      var solveText =
+        "solve " + ev.outcome + " (applied " + ev.applied + ", dropped " + ev.dropped + ")";
+      feedLine(ev.agent, solveText);
+      appendThinkLine(solveText, false);
+    } else if (ev.kind === "commit") {
+      feedLine(ev.agent, "commit: " + ev.expr);
+      showThinkCommit(ev.expr);
+    }
+  }
+}
+// Slice C: bumped by every newGame()/quit; a fetch response started under an
+// older epoch is discarded (the newer match owns the board).
+var epoch = 0;
 
 // --- helpers ---------------------------------------------------------------
 
@@ -470,26 +703,68 @@ function setInputEnabled(enabled) {
 // --- M5.4 setup + playback controls -----------------------------------------
 
 function updateModelInputs() {
-  modelTeam1Input.classList.toggle("hidden", modeTeam1Sel.value !== "llm");
-  modelTeam2Input.classList.toggle("hidden", modeTeam2Sel.value !== "llm");
+  // Model + persona inputs show for both LLM modes (llm, hybrid).
+  var agentMode1 = modeTeam1Sel.value === "llm" || modeTeam1Sel.value === "hybrid";
+  var agentMode2 = modeTeam2Sel.value === "llm" || modeTeam2Sel.value === "hybrid";
+  modelTeam1Input.classList.toggle("hidden", !agentMode1);
+  personaTeam1Sel.classList.toggle("hidden", !agentMode1);
+  modelTeam2Input.classList.toggle("hidden", !agentMode2);
+  personaTeam2Sel.classList.toggle("hidden", !agentMode2);
 }
 
-function composedMode(modeSelect, modelInput) {
-  // The wire string is the roster entry: "llm:<model>" for LLM sides.
-  if (modeSelect.value !== "llm") return modeSelect.value;
-  var model = modelInput.value.trim();
-  return "llm:" + (model === "" ? DEFAULT_LLM_MODEL : model);
+function personaSuffix(personaSel) {
+  var persona = personaSel.value;
+  return persona === "none" || persona === "" ? "" : "@" + persona;
+}
+
+function composedMode(modeSelect, modelInput, personaSelect) {
+  // The wire string is the roster entry: "llm:<model>[@persona]" for LLM
+  // sides, "hybrid:<model>[@persona]" for LLM Plan sides (M5.5).
+  if (modeSelect.value === "llm") {
+    var model = modelInput.value.trim();
+    return (
+      "llm:" +
+      (model === "" ? DEFAULT_LLM_MODEL : model) +
+      personaSuffix(personaSelect)
+    );
+  }
+  if (modeSelect.value === "hybrid") {
+    var planModel = modelInput.value.trim();
+    return (
+      "hybrid:" +
+      (planModel === "" ? DEFAULT_LLM_MODEL : planModel) +
+      personaSuffix(personaSelect)
+    );
+  }
+  return modeSelect.value;
 }
 
 function wireToSelect(mode) {
-  if (mode === "human" || mode === "solver" || mode === "random" || mode === "straight") {
+  if (
+    mode === "human" ||
+    mode === "solver" ||
+    mode === "random" ||
+    mode === "straight" ||
+    mode === "67"
+  ) {
     return mode;
   }
+  if (mode.indexOf("hybrid:") === 0) return "hybrid";
   return mode.indexOf("llm:") === 0 ? "llm" : "human";
 }
 
 function wireToModel(mode) {
-  return mode.indexOf("llm:") === 0 ? mode.slice(4) : DEFAULT_LLM_MODEL;
+  // The model part sits between the prefix and the LAST "@" (the persona
+  // suffix); no current model name contains "@".
+  var withoutPersona = mode.split("@")[0];
+  if (withoutPersona.indexOf("llm:") === 0) return withoutPersona.slice(4);
+  if (withoutPersona.indexOf("hybrid:") === 0) return withoutPersona.slice(7);
+  return DEFAULT_LLM_MODEL;
+}
+
+function wireToPersona(mode) {
+  var at = mode.lastIndexOf("@");
+  return at >= 0 ? mode.slice(at + 1) : "none";
 }
 
 function syncSetupFromServer(data) {
@@ -500,8 +775,10 @@ function syncSetupFromServer(data) {
     };
     modeTeam1Sel.value = wireToSelect(teamModes.team1);
     modelTeam1Input.value = wireToModel(teamModes.team1);
+    personaTeam1Sel.value = wireToPersona(teamModes.team1);
     modeTeam2Sel.value = wireToSelect(teamModes.team2);
     modelTeam2Input.value = wireToModel(teamModes.team2);
+    personaTeam2Sel.value = wireToPersona(teamModes.team2);
     updateModelInputs();
   }
   if (typeof data.max_turns === "number") {
@@ -534,6 +811,11 @@ function scheduleNext() {
   }, BASE_INTER_TURN_DELAY / speed);
 }
 
+function humanWaitingMessage() {
+  var n = board && board.shooter ? board.shooter.player_index + 1 : 1;
+  return "Player " + n + " is human — fire manually; Play drives the agent sides.";
+}
+
 function setPlaying(on) {
   playing = on;
   playPauseBtn.textContent = on ? "Pause" : "Play";
@@ -542,19 +824,89 @@ function setPlaying(on) {
     playTimer = null;
   }
   updateControls();
-  if (on && !animating && !gameOver) scheduleNext();
+  if (on && !animating && !gameOver) {
+    if (currentSideMode() === "human") {
+      logSystem(humanWaitingMessage());
+    }
+    scheduleNext();
+  }
+}
+
+// G1 — immediate driver swap: the panel's composed mode for the changed side
+// applies at once (same match, no board animation, no epoch bump).
+function revertDriverUI(side) {
+  if (side === 1) {
+    modeTeam1Sel.value = wireToSelect(teamModes.team1);
+    modelTeam1Input.value = wireToModel(teamModes.team1);
+    personaTeam1Sel.value = wireToPersona(teamModes.team1);
+  } else {
+    modeTeam2Sel.value = wireToSelect(teamModes.team2);
+    modelTeam2Input.value = wireToModel(teamModes.team2);
+    personaTeam2Sel.value = wireToPersona(teamModes.team2);
+  }
+  updateModelInputs();
+}
+
+function onDriverChange(side) {
+  updateModelInputs();
+  if (!board) return;
+  var wire =
+    side === 1
+      ? composedMode(modeTeam1Sel, modelTeam1Input, personaTeam1Sel)
+      : composedMode(modeTeam2Sel, modelTeam2Input, personaTeam2Sel);
+  var body = side === 1 ? { team1: wire } : { team2: wire };
+  postJSON("/api/set_modes", body).then(function (r) {
+    if (r.status !== 200) {
+      revertDriverUI(side);
+      updateControls();
+      logSystem(apiErrorText(r.status, r.data));
+      return;
+    }
+    if (r.data.board) applyBoard(r.data.board);
+    syncSetupFromServer(r.data);
+    var live = side === 1 ? teamModes.team1 : teamModes.team2;
+    logSystem("Player " + side + " driver: " + live);
+    updateControls();
+    // Swapping to an agent mid-Play just works (solver or LLM).
+    if (playing && !animating && !gameOver && currentSideMode() !== "human") {
+      scheduleNext();
+    }
+  }).catch(function (err) {
+    revertDriverUI(side);
+    updateControls();
+    logSystem("Server unreachable: " + err);
+  });
 }
 
 function agentTurn() {
   if (animating || gameOver) return;
+  var requestEpoch = epoch;
+  var llmTurn = isLLMMode(currentSideMode());
+  if (llmTurn) openThinkBubble();
   animating = true;
   updateControls();
+  startActivityPoll(); // Slice B: live feed while the LLM turn runs
   postJSON("/api/agent_turn", {})
     .then(function (r) {
+      if (requestEpoch !== epoch) {
+        stopActivityPoll();
+        hideThinkBubble();
+        return; // stale: a newer match owns the board
+      }
+      stopActivityPoll();
+      drainActivity(); // Slice B: one final fetch for the tail
       if (r.status === 409) {
         animating = false;
+        hideThinkBubble();
         if (r.data.error === "human_turn") {
+          if (playing) logSystem(humanWaitingMessage());
           updateControls();
+          return;
+        }
+        if (r.data.error === "aborted") {
+          // Slice C: the turn was cancelled before any shot; no board change.
+          updateControls();
+          logSystem("turn aborted");
           return;
         }
         applyBoard(r.data.board);
@@ -564,6 +916,7 @@ function agentTurn() {
       }
       if (r.status !== 200) {
         animating = false;
+        hideThinkBubble();
         updateControls();
         logSystem(apiErrorText(r.status, r.data));
         return;
@@ -572,6 +925,7 @@ function agentTurn() {
       if (data.draw_reason === "TURN_CAP" && data.shot === undefined) {
         // Arrived at an already-spent cap: no shot traveled.
         animating = false;
+        hideThinkBubble();
         applyBoard(data.board);
         gameOver = true;
         updateControls();
@@ -580,16 +934,23 @@ function agentTurn() {
         ]);
         return;
       }
+      if (thinkActive && data.func_str) showThinkCommit(data.func_str);
       animateShotResponse(data);
     })
     .catch(function (err) {
+      stopActivityPoll();
+      closeDeltaLine();
       animating = false;
+      hideThinkBubble();
       updateControls();
       logSystem("Server unreachable: " + err);
     });
 }
 
 function newGame() {
+  epoch += 1;
+  hideThinkBubble();
+  var requestEpoch = epoch;
   var body = {};
   var seedText = seedInput.value.trim();
   if (seedText !== "") {
@@ -597,40 +958,93 @@ function newGame() {
     if (!isNaN(parsed)) body.seed = Math.trunc(parsed);
   }
   body.team_modes = {
-    team1: composedMode(modeTeam1Sel, modelTeam1Input),
-    team2: composedMode(modeTeam2Sel, modelTeam2Input),
+    team1: composedMode(modeTeam1Sel, modelTeam1Input, personaTeam1Sel),
+    team2: composedMode(modeTeam2Sel, modelTeam2Input, personaTeam2Sel),
   };
   var mt = parseInt(maxTurnsInput.value, 10);
   if (!isNaN(mt) && mt >= 1) body.max_turns = mt;
   setPlaying(false);
   postJSON("/api/new_game", body)
     .then(function (r) {
+      if (requestEpoch !== epoch) return; // stale: a newer match owns the board
       if (r.status !== 200) {
         logSystem(apiErrorText(r.status, r.data));
         return;
       }
-      seed = r.data.seed;
-      shotAnim = null;
-      fadingTraj = null;
-      explosion = null;
-      hitFlashes = [];
-      animating = false;
-      dialAngle = null;
-      applyBoard(r.data);
-      syncSetupFromServer(r.data);
-      updateControls();
-      overlay.classList.add("hidden");
-      logSystem("New match started (seed " + seed + ")");
+      adoptNewBoard(r.data);
     })
     .catch(function (err) {
       logSystem("Server unreachable: " + err);
     });
 }
 
+// The shared success path for New Match and Quit: adopt the fresh board and
+// clear the in-flight animation state.
+function adoptNewBoard(data, optMsg) {
+  seed = data.seed;
+  shotAnim = null;
+  fadingTraj = null;
+  explosion = null;
+  hitFlashes = [];
+  animating = false;
+  dialAngle = null;
+  hideThinkBubble();
+  applyBoard(data);
+  syncSetupFromServer(data);
+  updateControls();
+  overlay.classList.add("hidden");
+  logSystem(optMsg || "New match started (seed " + seed + ")");
+}
+
+// Slice C: Quit = abandon the current match and reset to the default human
+// board. Works mid-LLM-turn: the server's cancel event unwinds the in-flight
+// agent turn while this POST waits for the lock.
+function quitMatch() {
+  setPlaying(false);
+  epoch += 1;
+  hideThinkBubble();
+  var requestEpoch = epoch;
+  logSystem("Match abandoned");
+  resetSetupPanel();
+  seedInput.value = "";
+  if (animating) {
+    logSystem("cancelling in-flight turn…");
+  }
+  postJSON("/api/new_game", {})
+    .then(function (r) {
+      if (requestEpoch !== epoch) return; // stale
+      if (r.status !== 200) {
+        animating = false;
+        updateControls();
+        logSystem(apiErrorText(r.status, r.data));
+        return;
+      }
+      adoptNewBoard(r.data);
+    })
+    .catch(function (err) {
+      // The match is abandoned client-side regardless of the POST's fate.
+      animating = false;
+      updateControls();
+      logSystem("Server unreachable: " + err);
+    });
+}
+
+function resetSetupPanel() {
+  modeTeam1Sel.value = "human";
+  modeTeam2Sel.value = "human";
+  modelTeam1Input.value = DEFAULT_LLM_MODEL;
+  modelTeam2Input.value = DEFAULT_LLM_MODEL;
+  personaTeam1Sel.value = "none";
+  personaTeam2Sel.value = "none";
+  maxTurnsInput.value = DEFAULT_MAX_TURNS;
+  updateModelInputs();
+}
+
 function finishShot(now, data) {
   explosion = null;
   hitFlashes = [];
   shotAnim = null;
+  hideThinkBubble();
   fadingTraj = {
     points: data.shot.points,
     color: data.shooter.color,
@@ -710,10 +1124,12 @@ function fire() {
   var funcStr = funcInput.value;
   if (funcStr.length === 0) return; // GameScreen.java:433
 
+  var requestEpoch = epoch;
   animating = true;
   updateControls();
   postJSON("/api/fire", { func_str: funcStr })
     .then(function (r) {
+      if (requestEpoch !== epoch) return; // stale: a newer match owns the board
       if (r.status === 400) {
         animating = false;
         updateControls();
@@ -722,6 +1138,12 @@ function fire() {
       }
       if (r.status === 409) {
         animating = false;
+        if (r.data.error === "agent_turn") {
+          applyBoard(r.data.board);
+          updateControls();
+          logSystem(r.data.detail || "The current side is agent-driven — use Step/Play.");
+          return;
+        }
         applyBoard(r.data.board);
         gameOver = true;
         updateControls();
@@ -764,8 +1186,24 @@ newBtn.addEventListener("click", newGame);
 seedInput.addEventListener("keydown", function (ev) {
   if (ev.key === "Enter") newGame();
 });
-modeTeam1Sel.addEventListener("change", updateModelInputs);
-modeTeam2Sel.addEventListener("change", updateModelInputs);
+modeTeam1Sel.addEventListener("change", function () {
+  onDriverChange(1);
+});
+modeTeam2Sel.addEventListener("change", function () {
+  onDriverChange(2);
+});
+modelTeam1Input.addEventListener("change", function () {
+  onDriverChange(1);
+});
+modelTeam2Input.addEventListener("change", function () {
+  onDriverChange(2);
+});
+personaTeam1Sel.addEventListener("change", function () {
+  onDriverChange(1);
+});
+personaTeam2Sel.addEventListener("change", function () {
+  onDriverChange(2);
+});
 playPauseBtn.addEventListener("click", function () {
   setPlaying(!playing);
 });
@@ -777,30 +1215,26 @@ speedSel.addEventListener("change", function () {
   speed = parseFloat(speedSel.value); // scales the inter-turn delay only
 });
 quitBtn.addEventListener("click", function () {
-  if (animating) return;
+  // Slice C: no animating gate — Quit must work mid-LLM-turn (the server's
+  // cancel path unwinds the in-flight agent turn).
   showOverlay("Quit the current match?", [
-    { label: "Yes", action: newGame },
+    { label: "Yes", action: quitMatch },
     { label: "No", action: function () {} },
   ]);
 });
 
 function frame(now) {
   draw(now);
+  positionThinkBubble();
   requestAnimationFrame(frame);
 }
 
-postJSON("/api/new_game", {})
-  .then(function (r) {
-    if (r.status !== 200) {
-      logSystem(apiErrorText(r.status, r.data));
-      updateControls();
-      return;
-    }
-    seed = r.data.seed;
-    applyBoard(r.data);
-    syncSetupFromServer(r.data);
-    updateControls();
-    logSystem("New match started (seed " + seed + ")");
+fetch("/api/state")
+  .then(function (res) {
+    return res.json();
+  })
+  .then(function (data) {
+    adoptNewBoard(data, "Connected — seed " + data.seed);
   })
   .catch(function (err) {
     logSystem("Server unreachable: " + err);

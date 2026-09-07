@@ -4,6 +4,8 @@
   the observation's centered world frame (the same ``m·x`` line the solver's
   ``line`` rung uses; terrain occlusion means it usually dies at a rock —
   that is the point of a baseline).
+- :class:`Bot67Agent` — draws only ``67`` (a horizontal shot at the
+  shooter's own height, after the auto offset; the in-joke baseline).
 - :class:`RandomAgent` — samples random members of a small closed grammar of
   valid Graphwar expressions (line / quadratic / sine / Gaussian), validating
   each emit through the real parser and logging parse failures / retries.
@@ -66,6 +68,37 @@ class StraightShotAgent:
         return self._stats
 
 
+class Bot67Agent:
+    """The 67 bot: it draws only 67.
+
+    Emits the literal expression ``67`` every turn — no aim, no variation,
+    no reads of the board beyond the protocol. Physically the auto vertical
+    offset routes ANY constant through the muzzle (``effective = 67 + (sy -
+    f(sx)) = sy``), so this is the horizontal shot at the shooter's own
+    height: it kills exactly when an enemy lines up at that height. That is
+    the joke and the baseline: maximally simple, perfectly predictable.
+
+    The literal is a board-game in-joke (the bot that draws only 67), kept
+    verbatim rather than reformatted through :func:`format_literal`.
+    """
+
+    name: str = "67"
+    _stats: AgentStats
+
+    # The one expression this bot will ever draw.
+    _EXPRESSION: str = "67"
+
+    def __init__(self) -> None:
+        self._stats = AgentStats()
+
+    def act(self, game: Game, obs: Observation) -> str:
+        del game, obs  # it draws only 67
+        return self._EXPRESSION
+
+    def stats(self) -> AgentStats:
+        return self._stats
+
+
 class RandomAgent:
     """A random member of a small closed grammar of valid expressions.
 
@@ -114,4 +147,4 @@ class RandomAgent:
         return f"({format_literal(amp)})*e^(-({format_literal(b)})*({_center_term(c)})^2)"
 
 
-__all__ = ["RandomAgent", "StraightShotAgent"]
+__all__ = ["Bot67Agent", "RandomAgent", "StraightShotAgent"]

@@ -724,3 +724,377 @@ def test_seed21_turn_message_carries_the_muzzle_warning() -> None:
     _, obs = _seed21_game_and_obs()
     message = _turn_message(obs, "unlimited")
     assert "just right of your muzzle" in message
+
+
+# --- 13. live activity feed (Slice B) -------------------------------------------
+#
+# Events: ("round"|"text"|"tool_call"|"tool_result"|"guardrail"|"persona"|
+# "commit"|"delta", payload) — the UI server routes them into its ring.
+
+
+def test_event_sequence_for_a_scripted_turn() -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    agent = _agent(
+        [_tool_use("sim-1", "0.05*x"), _text("0.05*x")],
+        tool_rounds=3,
+        on_event=lambda kind, payload: events.append((kind, dict(payload))),
+    )
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "0.05*x"
+    assert [kind for kind, _ in events] == [
+        "round",
+        "tool_call",
+        "tool_result",
+        "round",
+        "text",
+        "guardrail",
+        "commit",
+    ]
+    assert events[0] == ("round", {"n": 1, "force_commit": False})
+    assert events[1] == ("tool_call", {"expr": "0.05*x"})
+    tool_result = events[2][1]
+    assert tool_result["denied"] is False
+    assert tool_result["stop_reason"] in {"hit", "terrain", "off_map", "short", "passed"}
+    assert events[3] == ("round", {"n": 2, "force_commit": True})
+    assert events[4] == ("text", {"text": "0.05*x"})
+    # The commit IS the best probe: ties go to the commit (guardrail stands).
+    assert events[5] == ("guardrail", {"fired": False, "expr": "0.05*x"})
+    assert events[6] == ("commit", {"expr": "0.05*x"})
+
+
+def test_persona_event_carries_the_verdict() -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    agent = _agent(
+        [_text("0.05*x")],
+        persona="sniper",
+        on_event=lambda kind, payload: events.append((kind, dict(payload))),
+    )
+    game, obs = _game_and_obs()  # a bottom-rung line passes without oracle use
+    assert agent.act(game, obs) == "0.05*x"
+    assert [kind for kind, _ in events] == ["round", "text", "persona", "commit"]
+    assert events[2] == (
+        "persona",
+        {"verdict": "PASS", "reason": "", "constraint": "simplest_rung"},
+    )
+
+
+def test_guardrail_event_reports_the_fired_probe() -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    agent = _agent(
+        [_tool_use("sim-1", "0*x"), _text("-1.4117(x+18.117)")],
+        on_event=lambda kind, payload: events.append((kind, dict(payload))),
+    )
+    game, obs = _seed21_game_and_obs()
+    assert agent.act(game, obs) == "0*x"
+    guardrail = [payload for kind, payload in events if kind == "guardrail"]
+    assert guardrail == [{"fired": True, "expr": "0*x"}]
+    commit = [payload for kind, payload in events if kind == "commit"]
+    assert commit == [{"expr": "0*x"}]
+
+
+def test_tool_result_denied_event_on_budget_exhaustion() -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    agent = _agent(
+        [
+            _tool_use("sim-1", "0.05*x"),
+            _tool_use("sim-2", "denied-expr"),
+            _text("0.05*x"),
+        ],
+        simulate_budget=1,
+        on_event=lambda kind, payload: events.append((kind, dict(payload))),
+    )
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "0.05*x"
+    results = [payload for kind, payload in events if kind == "tool_result"]
+    assert results[0]["denied"] is False
+    assert results[1] == {"denied": True, "expr": "denied-expr"}
+
+
+def test_broken_sink_never_crashes_the_turn() -> None:
+    def bad_sink(kind: str, payload: dict[str, Any]) -> None:
+        raise RuntimeError("sink exploded")
+
+    agent = _agent([_text("0.05*x")], on_event=bad_sink)
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "0.05*x"
+
+
+def test_set_event_sink_detaches() -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    agent = _agent([_text("0.05*x")], on_event=lambda kind, payload: events.append((kind, payload)))
+    agent.set_event_sink(None)
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "0.05*x"
+    assert events == []
+
+
+# --- 13. streaming deltas (Slice B) ---------------------------------------------
+
+
+class _StreamDelta:
+    def __init__(self, type: str, **fields: Any) -> None:  # noqa: A002 - wire field
+        self.type = type
+        for key, value in fields.items():
+            setattr(self, key, value)
+
+
+class _StreamEvent:
+    def __init__(self, type: str, delta: _StreamDelta | None = None) -> None:  # noqa: A002
+        self.type = type
+        self.delta = delta
+
+
+class _IterableStream:
+    """A fake SDK stream that IS iterable (the real one is) and also closes
+    via the context-manager protocol."""
+
+    def __init__(self, events: list[_StreamEvent], response: _Response) -> None:
+        self._events = list(events)
+        self._response = response
+
+    def __iter__(self) -> Any:
+        return iter(self._events)
+
+    def __enter__(self) -> _IterableStream:
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        return False
+
+    def get_final_message(self) -> _Response:
+        return self._response
+
+
+class _IterableStreamingMessages:
+    def __init__(self, events: list[_StreamEvent], response: _Response) -> None:
+        self._events = events
+        self._response = response
+        self.stream_kwargs: dict[str, Any] | None = None
+
+    def stream(self, **kwargs: Any) -> _IterableStream:
+        self.stream_kwargs = kwargs
+        return _IterableStream(self._events, self._response)
+
+
+class _IterableStreamingClient:
+    def __init__(self, events: list[_StreamEvent], response: _Response) -> None:
+        self.messages = _IterableStreamingMessages(events, response)
+
+
+def test_stream_deltas_forward_as_events() -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    stream_events = [
+        _StreamEvent("message_start"),
+        _StreamEvent("content_block_start"),
+        _StreamEvent(
+            "content_block_delta", _StreamDelta("thinking_delta", thinking="planning the arc")
+        ),
+        _StreamEvent("content_block_delta", _StreamDelta("text_delta", text="0.05*")),
+        _StreamEvent("content_block_delta", _StreamDelta("text_delta", text="x")),
+        _StreamEvent("content_block_stop"),
+    ]
+    response = _Response("end_turn", [_TextBlock("0.05*x")])
+    agent = LLMAgent(
+        model="fake-model",
+        client=_IterableStreamingClient(stream_events, response),
+        on_event=lambda kind, payload: events.append((kind, dict(payload))),
+    )
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "0.05*x"
+    deltas = [payload for kind, payload in events if kind == "delta"]
+    assert deltas == [
+        {"kind": "thinking", "text": "planning the arc"},
+        {"kind": "text", "text": "0.05*"},
+        {"kind": "text", "text": "x"},
+    ]
+    final_text = [payload for kind, payload in events if kind == "text"]
+    assert final_text == [{"text": "0.05*x"}]
+
+
+def test_stream_delta_thinking_field_shape() -> None:
+    """The real SDK's thinking delta carries .thinking (not .text)."""
+    events: list[tuple[str, dict[str, Any]]] = []
+    stream_events = [
+        _StreamEvent("content_block_delta", _StreamDelta("thinking_delta", thinking="pondering")),
+    ]
+    response = _Response("end_turn", [_TextBlock("0.05*x")])
+    agent = LLMAgent(
+        model="fake-model",
+        client=_IterableStreamingClient(stream_events, response),
+        on_event=lambda kind, payload: events.append((kind, dict(payload))),
+    )
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "0.05*x"
+    deltas = [payload for kind, payload in events if kind == "delta"]
+    assert deltas == [{"kind": "thinking", "text": "pondering"}]
+
+
+def test_non_iterable_stream_fake_gets_no_deltas() -> None:
+    """The existing _FakeStream (get_final_message only) is a documented
+    no-op for deltas: no delta events, response still served."""
+    events: list[tuple[str, dict[str, Any]]] = []
+    agent = LLMAgent(
+        model="fake-model",
+        client=_StreamingFakeClient(_Response("end_turn", [_TextBlock("0.05*x")])),
+        on_event=lambda kind, payload: events.append((kind, dict(payload))),
+    )
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "0.05*x"
+    assert [kind for kind, _ in events if kind == "delta"] == []
+
+
+def test_mid_stream_cancel_raises_turn_cancelled() -> None:
+    """The per-delta-batch cancel check (Slice C mid-round granularity): the
+    flag flips inside the iteration and the stream raises before the final
+    message lands."""
+    from agents.llm_agent import TurnCancelled
+
+    flag = {"set": False}
+
+    class _CancellingIterableMessages:
+        def __init__(self) -> None:
+            self.stream_calls = 0
+
+        def stream(self, **kwargs: Any) -> _IterableStream:
+            self.stream_calls += 1
+
+            def event_gen() -> Any:
+                yield _StreamEvent("content_block_delta", _StreamDelta("text_delta", text="0.05"))
+                flag["set"] = True  # cancel arrives mid-stream
+                yield _StreamEvent("content_block_delta", _StreamDelta("text_delta", text="*x"))
+
+            return _IterableStream(list(event_gen()), _Response("end_turn", [_TextBlock("0.05*x")]))
+
+    class _CancellingIterableClient:
+        def __init__(self) -> None:
+            self.messages = _CancellingIterableMessages()
+
+    agent = LLMAgent(
+        model="fake-model",
+        client=_CancellingIterableClient(),
+        cancel_requested=lambda: flag["set"],
+    )
+    game, obs = _game_and_obs()
+    with pytest.raises(TurnCancelled):
+        agent.act(game, obs)
+
+
+# --- 14. cancellation (Slice C) -------------------------------------------------
+#
+# TurnCancelled derives from BaseException so act's catch-all `except
+# Exception` cannot convert a cancel into a dud shot. The UI server passes a
+# module-level threading.Event.is_set as the callback; eval passes nothing.
+
+
+def test_turn_cancelled_is_a_base_exception() -> None:
+    from agents.llm_agent import TurnCancelled
+
+    assert issubclass(TurnCancelled, BaseException)
+    assert not issubclass(TurnCancelled, Exception)
+
+
+def test_cancel_between_rounds_raises_and_leaves_the_board_untouched() -> None:
+    """The fake client serves one probe round, then the flag flips: the
+    between-rounds check raises TurnCancelled, no shot is fired, and the
+    stats reflect the probes without corruption."""
+    from agents.llm_agent import TurnCancelled
+
+    flag = {"set": False}
+
+    class _FlagFlippingMessages:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def create(self, **kwargs: Any) -> _Response:
+            self.calls += 1
+            if self.calls == 1:
+                flag["set"] = True  # the cancel arrives mid-turn
+                return _tool_use("sim-1", "0.05*x")
+            return _text("0.05*x")
+
+    class _FlagFlippingClient:
+        def __init__(self) -> None:
+            self.messages = _FlagFlippingMessages()
+
+    agent = LLMAgent(
+        model="fake-model", client=_FlagFlippingClient(), cancel_requested=lambda: flag["set"]
+    )
+    game, obs = _game_and_obs()
+    with pytest.raises(TurnCancelled):
+        agent.act(game, obs)
+    # Board untouched: no shot fired, no soldier died, no turn advanced.
+    fresh = Game.create(5, num_soldiers=1)
+    assert game.state.current_turn == fresh.state.current_turn
+    assert [s.alive for s in game.all_soldiers()] == [s.alive for s in fresh.all_soldiers()]
+    # Stats not corrupted: the probe is accounted, no parse-failure noise.
+    stats = agent.stats()
+    assert stats.simulate_calls == 1
+    assert stats.parse_failures == 0
+    assert stats.retries == 0
+    assert stats.guardrail_overrides == 0
+    assert agent._client.messages.calls == 1  # the second round never started
+
+
+def test_cancel_set_before_the_turn_raises_immediately() -> None:
+    from agents.llm_agent import TurnCancelled
+
+    agent = _agent([_text("0.05*x")], cancel_requested=lambda: True)
+    game, obs = _game_and_obs()
+    with pytest.raises(TurnCancelled):
+        agent.act(game, obs)
+    assert agent.stats().simulate_calls == 0
+    assert agent._client.messages.calls == []  # no API round-trip at all
+
+
+def test_cancel_beats_an_api_retry() -> None:
+    """A transport death plus a set flag: the between-retries check fires
+    before the retry regenerates."""
+    from agents.llm_agent import TurnCancelled
+
+    flag = {"set": False}
+
+    class _DyingThenFlagMessages:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def create(self, **kwargs: Any) -> _Response:
+            self.calls += 1
+            flag["set"] = True
+            raise RemoteProtocolError("peer closed connection")
+
+    class _DyingThenFlagClient:
+        def __init__(self) -> None:
+            self.messages = _DyingThenFlagMessages()
+
+    agent = LLMAgent(
+        model="fake-model",
+        client=_DyingThenFlagClient(),
+        cancel_requested=lambda: flag["set"],
+    )
+    game, obs = _game_and_obs()
+    with pytest.raises(TurnCancelled):
+        agent.act(game, obs)
+    assert agent._client.messages.calls == 1  # the retry never happened
+
+
+def test_eval_runs_without_a_cancel_callback_and_cannot_swallow_one() -> None:
+    """Eval passes no cancel callback (the default never fires) — and the
+    runner's defensive branches cannot swallow a TurnCancelled anyway: it is
+    a BaseException and propagates out of play_match."""
+    from agents.llm_agent import TurnCancelled
+
+    class _CancellingAgent:
+        name = "canceller"
+
+        def act(self, game: Game, obs: Any) -> str:
+            raise TurnCancelled()
+
+        def stats(self) -> Any:
+            from agents import AgentStats
+
+            return AgentStats()
+
+    with pytest.raises(TurnCancelled):
+        play_match(
+            21, _CancellingAgent(), StraightShotAgent(), MatchConfig(num_soldiers=2, max_turns=2)
+        )

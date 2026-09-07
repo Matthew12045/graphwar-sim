@@ -109,7 +109,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import cast
+from typing import NamedTuple, cast
 
 import numpy as np
 
@@ -265,6 +265,9 @@ class CCFCertificate:
     solve_seconds: float = 0.0
     binding: str | None = None  # e.g. "lower@u=184.00" / "infeasible@sigma=0.5"
     trace: tuple[str, ...] = field(default_factory=tuple)
+    # M5.5.4: waypoints dropped pre-solve (their tightening emptied a chain
+    # cell's interval) — reported, never silently discarded.
+    dropped_waypoints: tuple[str, ...] = ()
 
 
 @dataclass
@@ -1192,6 +1195,60 @@ def _finalize_solution(
 # --- Per-target driver (sigma ladder x branches) --------------------------------
 
 
+class CorridorWaypoint(NamedTuple):
+    """One LLM-plan corridor tightening (M5.5.3 / M5.5.4).
+
+    ``u`` is SHOOTER-relative x in ``(0, u_T)`` (endpoints are solver-owned);
+    ``y`` is the SHOOTER-relative height (``y_world - my``); ``tol`` is the
+    half-width of the allowed vertical band in world units (schema-validated
+    upstream to be >= the SOLDIER_RADIUS hit radius). The waypoint never
+    becomes an LP equality — it intersects the containing chain cell's
+    ``[L, H]`` interval (tightenings only; see :func:`_apply_waypoints`).
+    """
+
+    u: float
+    y: float
+    tol: float
+
+
+def _apply_waypoints(
+    Lcell: np.ndarray,
+    Hcell: np.ndarray,
+    waypoints: Sequence[CorridorWaypoint],
+    du: float,
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """M5.5.4: intersect each waypoint's ``[y - tol, y + tol]`` into the
+    CONTAINING chain cell's ``[L, H]`` interval.
+
+    ``L_k <- max(L_k, y_w - tol)``, ``H_k <- min(H_k, y_w + tol)`` —
+    TIGHTENINGS only, never equalities: the interval can only shrink, so the
+    LP keeps its exact form, the margin term composes, and every
+    certificate property of the cell-wise corridor is preserved. The
+    adjacent-sample propagation is the caller's existing per-sample rule
+    (``Lsamp[k] = max(Lcell[k-1], Lcell[k])`` et cetera), so the tightening
+    is certified across the cell, not just at a point.
+
+    A waypoint whose tightening EMPTIES the interval (``y - tol > H_k`` or
+    ``y + tol < L_k``) is dropped pre-solve and reported — no LP is spent on
+    a contradiction (M5.5.4).
+    """
+    dropped: list[str] = []
+    if not waypoints:
+        return Lcell, Hcell, dropped
+    L = np.array(Lcell, dtype=float)
+    H = np.array(Hcell, dtype=float)
+    for wp in waypoints:
+        k = min(max(int(math.floor(wp.u / du)), 0), len(L) - 1)
+        lo = max(L[k], wp.y - wp.tol)
+        hi = min(H[k], wp.y + wp.tol)
+        if lo > hi:
+            dropped.append(f"u={wp.u:.2f} emptied cell {k} (interval [{L[k]:.2f}, {H[k]:.2f}])")
+            continue
+        L[k] = lo
+        H[k] = hi
+    return L, H, dropped
+
+
 def solve_target(
     mx: float,
     my: float,
@@ -1205,18 +1262,26 @@ def solve_target(
     max_branches: int | None = None,
     char_limit: int | None = None,
     milp_time_budget: float | None = None,
+    waypoints: Sequence[CorridorWaypoint] = (),
 ) -> CCFSolution:
     """Run the full CCF search for ONE target (5.2.md §8-§9).
 
     Sweep (CCF teammate radius) -> K best branches by the §8 layered-DAG DP ->
     sigma ladder coarse->fine (first feasible sigma wins) -> per branch the
     allowance-mode LP, falling back to the tight-mode LP for the same branch.
+
+    M5.5.4: ``waypoints`` are soft corridor TIGHTENINGS (never equalities).
+    Each waypoint's interval is intersected into the containing chain cell's
+    bounds BEFORE the per-branch LP construction; the zero-waypoint path is
+    byte-identical to the pre-M5.5 solver. Dropped (interval-emptying)
+    waypoints are reported on the certificate.
     """
     t0 = time.perf_counter()
     limit = config.MAX_EXPR_CHARS if char_limit is None else char_limit
     mtb = _MILP_TIME_BUDGET if milp_time_budget is None else milp_time_budget
     k_branches = _MAX_BRANCHES if max_branches is None else max_branches
     ladder = tuple(sigma_ladder) if sigma_ladder is not None else _SIGMA_LADDER
+    waypoint_list = list(waypoints)
 
     tx, ty = targets[target_index]
     u_T = tx - mx
@@ -1267,6 +1332,7 @@ def solve_target(
     # cell-wise envelope are kept.
     branches: list[tuple[Chain, str, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
     dead_branches = 0
+    dropped_waypoints: list[str] = []
     for chain in _branch_paths(
         mx, my, tx, ty, circles, exclusions, inverted, target_index, k_branches
     ):
@@ -1277,6 +1343,14 @@ def solve_target(
         n_s = len(chain.L)
         us = np.arange(n_s, dtype=float) * _DU
         Lcell, Hcell = np.asarray(cells[0], dtype=float), np.asarray(cells[1], dtype=float)
+        if waypoint_list:
+            # M5.5.4: tighten the CELL bounds before the sample-wise rule and
+            # the LP — cell geometry is sigma-independent, so this runs once
+            # per branch, before the ladder. The adjacent-sample propagation
+            # below (the M5.2 §5 max/min rule) carries each tightening
+            # across its cell.
+            Lcell, Hcell, dropped = _apply_waypoints(Lcell, Hcell, waypoint_list, _DU)
+            dropped_waypoints.extend(dropped)
         if n_s == 1:
             Lsamp, Hsamp = Lcell, Hcell
         else:
@@ -1300,6 +1374,7 @@ def solve_target(
     if dead_branches:
         trace.append(f"cell_wise_dead_branches={dead_branches}")
     cert.branch_count = len(branches)
+    cert.dropped_waypoints = tuple(dict.fromkeys(dropped_waypoints))
     if not branches:
         cert.outcome = CCFOutcome.BASIS_INFEASIBLE
         cert.binding = "all_branches_fail_the_cell_wise_envelope"

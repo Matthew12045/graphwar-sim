@@ -88,6 +88,15 @@ class AgentStats:
     ``guardrail_overrides`` counts turns where the guardrail fired the best
     probed expression over an oracle-known-worse commit (strictly-worse rule,
     ties go to the commit).
+
+    M5.4 persona harness: ``constraint_checks`` counts the turns the
+    persona's machine verifier ran; ``constraint_violations`` the turns it
+    returned ``CONSTRAINT_VIOLATION`` ("did not play its own game" — kept
+    separate from the round outcome on the leaderboard, M5.4.1);
+    ``magician_partials`` the turns it returned ``MAGICIAN_PARTIAL`` (a
+    first-class outcome, not a failure — M5.4.2). Verifier oracle calls are
+    FREE (``agents.simulate_tool.simulate`` directly) and never appear in
+    ``simulate_calls``. Zero for agents without a persona.
     """
 
     parse_failures: int = 0
@@ -95,6 +104,21 @@ class AgentStats:
     simulate_calls: int = 0
     simulate_denied: int = 0
     guardrail_overrides: int = 0
+    constraint_checks: int = 0
+    constraint_violations: int = 0
+    magician_partials: int = 0
+    # M5.5 HybridAgent: ``schema_errors`` is its own counter (a schema error
+    # burns an API round, never a solver attempt — M5.5.3); the waypoint
+    # bookkeeping counts the winning attempt (applied) and every drop
+    # (relaxation + interval-emptying); the CCF cert outcome counts roll up
+    # per turn (EMIT_OVERFLOW folds into ``ccf_infeasible``).
+    schema_errors: int = 0
+    waypoints_applied: int = 0
+    waypoints_dropped: int = 0
+    ccf_certified: int = 0
+    ccf_uncertified: int = 0
+    ccf_infeasible: int = 0
+    ccf_unreachable: int = 0
 
 
 @runtime_checkable

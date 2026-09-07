@@ -68,6 +68,22 @@ class AgentMatchStats:
     # M5.4: turns where the commit guardrail fired the best probed expression
     # over an oracle-known-worse commit (strictly-worse rule; ties -> commit).
     guardrail_overrides: int = 0
+    # M5.4 persona harness: machine-verifier verdicts. "Did not play its own
+    # game" is a DIFFERENT failure from losing the round (M5.4.1) — these
+    # counters are reported in their own leaderboard section, never merged
+    # into win/hit rates.
+    constraint_checks: int = 0  # turns the persona's verifier ran
+    constraint_violations: int = 0  # CONSTRAINT_VIOLATION turns
+    magician_partials: int = 0  # MAGICIAN_PARTIAL(n,m) turns (first-class)
+    # M5.5 HybridAgent telemetry (its own section — planner value, not
+    # solver failures).
+    schema_errors: int = 0
+    waypoints_applied: int = 0
+    waypoints_dropped: int = 0
+    ccf_certified: int = 0
+    ccf_uncertified: int = 0
+    ccf_infeasible: int = 0
+    ccf_unreachable: int = 0
     # M5.1 taxonomy counters (turn outcomes / suppression, not attempts).
     pass_unreachable: int = 0  # corridor-proven unreachable turns
     solver_failed: int = 0  # reachable but the ladder could not convert it
@@ -92,6 +108,16 @@ class AgentLeaderRow:
     solver_failed: int = 0
     timeouts: int = 0
     repeat_suppressed: int = 0
+    constraint_checks: int = 0
+    constraint_violations: int = 0
+    magician_partials: int = 0
+    schema_errors: int = 0
+    waypoints_applied: int = 0
+    waypoints_dropped: int = 0
+    ccf_certified: int = 0
+    ccf_uncertified: int = 0
+    ccf_infeasible: int = 0
+    ccf_unreachable: int = 0
 
     @property
     def win_rate(self) -> float:
@@ -119,6 +145,16 @@ class AgentLeaderRow:
         self.solver_failed += other.solver_failed
         self.timeouts += other.timeouts
         self.repeat_suppressed += other.repeat_suppressed
+        self.constraint_checks += other.constraint_checks
+        self.constraint_violations += other.constraint_violations
+        self.magician_partials += other.magician_partials
+        self.schema_errors += other.schema_errors
+        self.waypoints_applied += other.waypoints_applied
+        self.waypoints_dropped += other.waypoints_dropped
+        self.ccf_certified += other.ccf_certified
+        self.ccf_uncertified += other.ccf_uncertified
+        self.ccf_infeasible += other.ccf_infeasible
+        self.ccf_unreachable += other.ccf_unreachable
 
     def as_row(self) -> tuple[str, ...]:
         """Markdown-ready table row (rates + raw counters + M5.1 taxonomy)."""

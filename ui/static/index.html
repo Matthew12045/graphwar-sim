@@ -39,11 +39,13 @@
         <div id="overlay-buttons"></div>
       </div>
     </div>
+    <div id="think-bubble" class="hidden"></div>
   </div>
 
   <!-- M5.4 spectator controls (below the 800x600 game box; nothing inside
        #app is repositioned). Modes map 1:1 to the eval roster entries;
-       "LLM" composes the wire string llm:<model>. -->
+       "LLM" composes the wire string llm:<model> and "LLM Plan" hybrid:<model>
+       (M5.5); the Persona dropdown appends "@<persona>" to either. -->
   <div id="controls">
     <div id="setup-panel" class="panel">
       <span class="setup-group">
@@ -53,9 +55,20 @@
           <option value="solver">Solver</option>
           <option value="random">Random</option>
           <option value="straight">Straight Shot</option>
+          <option value="67">Bot 67</option>
           <option value="llm">LLM</option>
+          <option value="hybrid">LLM Plan</option>
         </select>
         <input id="model-team1" type="text" class="hidden" spellcheck="false" value="qwen3.8-27b-fp8" aria-label="LLM model for Player 1">
+        <select id="persona-team1" class="hidden" aria-label="Persona for Player 1">
+          <option value="none" selected>Persona: none</option>
+          <option value="sniper">Sniper</option>
+          <option value="howitzer">Howitzer</option>
+          <option value="serpent">Serpent</option>
+          <option value="bodyguard">Bodyguard</option>
+          <option value="professor">Professor</option>
+          <option value="master_magician">Master Magician</option>
+        </select>
       </span>
       <span class="setup-group">
         <label for="mode-team2">Player 2</label>
@@ -64,9 +77,20 @@
           <option value="solver">Solver</option>
           <option value="random">Random</option>
           <option value="straight">Straight Shot</option>
+          <option value="67">Bot 67</option>
           <option value="llm">LLM</option>
+          <option value="hybrid">LLM Plan</option>
         </select>
         <input id="model-team2" type="text" class="hidden" spellcheck="false" value="qwen3.8-27b-fp8" aria-label="LLM model for Player 2">
+        <select id="persona-team2" class="hidden" aria-label="Persona for Player 2">
+          <option value="none" selected>Persona: none</option>
+          <option value="sniper">Sniper</option>
+          <option value="howitzer">Howitzer</option>
+          <option value="serpent">Serpent</option>
+          <option value="bodyguard">Bodyguard</option>
+          <option value="professor">Professor</option>
+          <option value="master_magician">Master Magician</option>
+        </select>
       </span>
       <span class="setup-group">
         <label for="max-turns">Max turns</label>
@@ -74,7 +98,7 @@
              loops (eval's MatchConfig 100 is a batch number). -->
         <input id="max-turns" type="number" min="1" value="30">
       </span>
-      <span class="setup-hint">applied by New Match</span>
+      <span class="setup-hint">drivers apply at once; New Match resets the board</span>
     </div>
     <div id="playback-bar" class="panel">
       <button id="play-pause" class="gbutton small">Play</button>

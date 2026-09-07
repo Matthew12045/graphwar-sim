@@ -1,22 +1,27 @@
 # personas/
 
-Shared LLM system-prompt fragments ("prepend") and persona style prompts for
-agent-based play. The M5.4 persona harness (`planning/The_bridge_nobody_wrote_down.md`)
-defines six canonical personas (sniper, howitzer, serpent, bodyguard,
-professor, master_magician); `The_Master_Magician.txt` and `file.txt`
-(Gremlin) are additional/alternate styles.
+Raw LLM system-prompt fragments ("prepend") and persona style prompts — the
+SOURCE MATERIAL for the M5.4 persona harness. Kept as provenance only: the
+wired code lives in `agents/personas/` (see
+`planning/The_bridge_nobody_wrote_down.md` M5.4.0–M5.4.2 for the spec).
 
-| File | Persona / role |
-|------|----------------|
-| `Shared_core_prepend_to_every_bot_.txt` | Core shared prompt (frame + hard rules) |
-| `Shared_core_prepend_to_every_bot_-2.txt` | Sniper |
-| `Shared_core_prepend_to_every_bot_-3.txt` | Howitzer |
-| `Shared_core_prepend_to_every_bot_-4.txt` | Serpent |
-| `Shared_core_prepend_to_every_bot_-5.txt` | Bodyguard |
-| `Shared_core_prepend_to_every_bot_-6.txt` | Professor |
-| `The_Master_Magician.txt` | Master Magician |
-| `file.txt` | Gremlin |
+**Status: the six canonical personas are ADAPTED and WIRED.** The adapted
+style texts live in `agents/personas/texts.py` (`*_STYLE` constants — the
+manifest's enumeration source, bridge M5.4.0); each persona attaches through
+`LLMAgent(..., persona=...)` with its machine verifier in
+`agents/personas/verifiers.py`. Do not point new code at the files below.
 
-Not yet wired into `agents/llm_agent.py` (personas are a separate workstream —
-see `agents/llm_agent.py` header). If the M5.4 consolidation lands, these
-migrate to `agents/personas/` per the bridge spec.
+| File | Persona / role | Status |
+|------|----------------|--------|
+| `Shared_core_prepend_to_every_bot_.txt` | Core shared prompt (frame + hard rules) | SUPERSEDED — `_SYSTEM_PROMPT` in `agents/llm_agent.py` is the adapted core |
+| `Shared_core_prepend_to_every_bot_-2.txt` | Sniper | ADAPTED + wired (`agents/personas/`) |
+| `Shared_core_prepend_to_every_bot_-3.txt` | Howitzer | ADAPTED + wired (`agents/personas/`) |
+| `Shared_core_prepend_to_every_bot_-4.txt` | Serpent | ADAPTED + wired (`agents/personas/`) |
+| `Shared_core_prepend_to_every_bot_-5.txt` | Bodyguard | ADAPTED + wired (`agents/personas/`) |
+| `Shared_core_prepend_to_every_bot_-6.txt` | Professor | ADAPTED + wired (`agents/personas/`) |
+| `The_Master_Magician.txt` | Master Magician | ADAPTED + wired (`agents/personas/`) |
+| `file.txt` | Gremlin | RAW, deliberately EXCLUDED — no manifest entry (designer call: a cross-turn rule the fresh-conversation-per-turn agent cannot honor) |
+
+The bridge spec defines SIX canonical personas (sniper, howitzer, serpent,
+bodyguard, professor, master_magician); the Gremlin stays here as raw
+material with no verifier and no manifest entry.

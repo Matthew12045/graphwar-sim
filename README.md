@@ -58,9 +58,12 @@ agents/
   observation.py   # observe(game): board -> world-frame obs + ASCII map
   simulate_tool.py # fire a candidate through the real physics, no kills applied
   simulate_budget.py # BudgetedSimulator: per-turn simulate budget + ledger
-  baselines.py     # RandomAgent, StraightShotAgent
+  baselines.py     # RandomAgent, StraightShotAgent, Bot67Agent (roster key "67")
   solver_agent.py  # wraps the deterministic M2 solver
   llm_agent.py     # LLMAgent: Anthropic tool-use over the budgeted simulate tool
+  personas/        # M5.4 persona harness: manifest + adapted style texts + verifiers
+  waypoints.py     # M5.5.3 waypoint plan schema (the only thing a hybrid LLM emits)
+  hybrid_agent.py  # HybridAgent (M5.5): LLM plan -> certified CCF shot
   emission.py      # format_literal: plain-decimal emission (no exponents)
 eval/
   runner.py        # seeded round-robin match runner + leaderboard writer
@@ -110,7 +113,8 @@ network-free): pass e.g. `roster=["solver", "llm:gpt-x"]` to
 `eval.runner.build_plan` and set the auth env vars (`ANTHROPIC_AUTH_TOKEN`
 Bearer — the Claude Code / gateway convention — or `ANTHROPIC_API_KEY`
 x-api-key, plus optional `ANTHROPIC_BASE_URL`). The `anthropic` SDK is the
-optional `[llm]` extra.
+optional `[llm]` extra. The `67` bot baseline is roster-selectable by key
+`"67"` (a guaranteed dud, so it stays out of the default round-robin).
 
 ## Install
 
