@@ -149,9 +149,18 @@ def test_turn_message_states_live_simulate_budget() -> None:
     game, obs = _game_and_obs()
     agent.act(game, obs)
     first_message = agent._client.messages.calls[0]["messages"][0]["content"]
-    assert "simulate calls remaining: 3" in first_message  # DEFAULT_SIMULATE_BUDGET
+    # User-locked live default: unlimited simulate calls.
+    assert "simulate calls remaining: unlimited" in first_message
     assert "shooter (you):" in first_message
     assert "enemies (nearest first):" in first_message
+
+    # An explicit int budget formats as the M5.5.6 count instead.
+    budgeted = _agent([_text("0*x")], simulate_budget=3)
+    budgeted.act(game, obs)
+    assert (
+        "simulate calls remaining: 3"
+        in budgeted._client.messages.calls[0]["messages"][0]["content"]
+    )
 
 
 # --- 2. malformed then corrected ---------------------------------------------
@@ -218,6 +227,43 @@ def test_last_rounds_force_text_only_commit() -> None:
     assert stats.parse_failures == 6  # six burns, honest accounting
 
 
+def test_commit_warning_rides_the_tool_results() -> None:
+    """The commit-now signal (the denial text's message) rides the probing
+    round that enters the commit window — the model commits on that signal,
+    never on its own."""
+    agent = _agent(
+        [_tool_use("sim-1", "0.05*x"), _tool_use("sim-2", "0.1*x"), _text("0.1*x")],
+        tool_rounds=3,
+    )
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "0.1*x"
+    calls = agent._client.messages.calls
+    r1_user = calls[1]["messages"][-1]["content"]
+    assert isinstance(r1_user[0], dict) and r1_user[0]["tool_use_id"] == "sim-1"
+    assert "commit your best expression NOW" in r1_user[-1]["text"]  # warning rides r1
+    r2_user = calls[2]["messages"][-1]["content"]
+    assert "commit your best expression NOW" in r2_user[-1]["text"]
+
+
+def test_round_cap_falls_back_to_the_last_probed_expression() -> None:
+    """When the round cap hits without a text commit, the model's LAST probed
+    expression is fired instead of the safe dud (the gateway ignores
+    tool_choice "none"; the probing must still pay off)."""
+    agent = _agent(
+        [_tool_use("sim-1", "0.05*x"), _tool_use("sim-2", "0.1*x")],
+        tool_rounds=2,
+    )
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "0.1*x"  # the last probe, not SAFE_DUD
+    stats = agent.stats()
+    assert stats.simulate_calls == 2
+    assert stats.parse_failures == 0
+
+    # Without any probe the safe dud stands.
+    burns = _agent([_Response("max_tokens", [])] * 6 + [_text("(("), _text("((")])
+    assert burns.act(game, obs) == SAFE_DUD
+
+
 def test_unrecoverable_api_failure_degrades_to_safe_dud() -> None:
     """After the API retries are exhausted the turn degrades to the safe dud
     instead of crashing the match (user-locked live-validation decision)."""
@@ -247,6 +293,20 @@ def test_unrecoverable_api_failure_degrades_to_safe_dud() -> None:
 
 
 # --- 4. tool-use round routed through BudgetedSimulator -----------------------
+
+
+def test_unlimited_simulate_budget_never_denies() -> None:
+    """The M5.4 user-locked live default: every simulate call delegates, no
+    denial stop-signal fires, and the counters still record the calls."""
+    agent = _agent([_tool_use(f"sim-{i}", "0.05*x") for i in range(1, 6)] + [_text("0.05*x")])
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "0.05*x"
+    stats = agent.stats()
+    assert stats.simulate_calls == 5
+    assert stats.simulate_denied == 0
+    for call in agent._client.messages.calls[1:6]:
+        tool_result = call["messages"][-1]["content"][0]
+        assert tool_result.get("is_error") is not True
 
 
 def test_tool_use_round_returns_simresult_fields() -> None:
@@ -296,12 +356,13 @@ def test_budget_denial_returns_error_and_does_not_delegate(
             _tool_use("sim-3", "0.15*x"),
             _tool_use("sim-4", denied_expr),
             _text("0.05*x"),
-        ]
+        ],
+        simulate_budget=3,  # the M5.3-style cap; the live default is unlimited
     )
     game, obs = _game_and_obs()
     assert agent.act(game, obs) == "0.05*x"
     stats = agent.stats()
-    assert stats.simulate_calls == 3  # DEFAULT_SIMULATE_BUDGET
+    assert stats.simulate_calls == 3  # the explicit simulate_budget cap
     assert stats.simulate_denied == 1
     # The denied call never reached the pure oracle.
     assert delegated == ["0.05*x", "0.1*x", "0.15*x"]

@@ -273,8 +273,9 @@ def _terrain_lines(blocks: tuple[tuple[float, float], ...]) -> list[str]:
     return lines
 
 
-def _turn_message(obs: Observation, remaining: int) -> str:
-    """The per-turn user message: the observation verbatim + live budget."""
+def _turn_message(obs: Observation, remaining: int | str) -> str:
+    """The per-turn user message: the observation verbatim + live budget
+    (``remaining`` is a count, or the string ``"unlimited"``)."""
 
     def fmt(p: tuple[float, float]) -> str:
         return f"({p[0]:.1f}, {p[1]:.1f})"
@@ -342,10 +343,22 @@ class LLMAgent:
         max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
         client: Any | None = None,
         reasoning_effort: str | None = None,
+        simulate_budget: int | None = None,
+        tool_rounds: int | None = None,
     ) -> None:
         self._model = model
         self.name = f"llm:{model}"
         self._max_attempts = max(1, max_attempts)
+        # User-locked live default (M5.4): UNLIMITED simulate calls per turn
+        # — the model probes as much as it wants; the turn message states
+        # "unlimited" and no denial stop-signal fires. Pass an int for the
+        # M5.3-style ablation grid (BudgetedSimulator handles the cap and
+        # the denial accounting either way).
+        self._simulate_budget = simulate_budget
+        # API round-trips per turn: the loop terminator (a turn ends on a
+        # commit, an attempts exhaustion, or this cap). None -> module
+        # default.
+        self._tool_rounds = tool_rounds if tool_rounds is not None else _MAX_TOOL_ROUNDS_PER_TURN
         # Live gateway measurement (see _REASONING_EFFORT): the default
         # effort (xhigh) burns the whole output budget on hidden thinking
         # and rounds die at the gateway's ~125s wall; "medium" caps it and
@@ -357,6 +370,9 @@ class LLMAgent:
         # Fail at construction on a missing token — never mid-match.
         self._client = client if client is not None else _build_client()
         self._stats = AgentStats()
+        # The last simulate-call expression this turn (the round-cap
+        # fallback fires it when the model never emits a text commit).
+        self._last_probe_expr: str | None = None
 
     def act(self, game: Game, obs: Observation) -> str:
         """Emit this turn's expression (centered world frame).
@@ -369,13 +385,15 @@ class LLMAgent:
         turn — harmless; counters stay correct); its ledger counters are
         folded into :meth:`stats` after every turn.
         """
-        sim = BudgetedSimulator(game)
+        sim = BudgetedSimulator(game, budget=self._simulate_budget)
         sim.new_turn()
+        self._last_probe_expr = None
         try:
+            budget_text: int | str = "unlimited" if sim.unlimited else sim.remaining
             messages: list[dict[str, Any]] = [
-                {"role": "user", "content": _turn_message(obs, sim.remaining)}
+                {"role": "user", "content": _turn_message(obs, budget_text)}
             ]
-            rounds_left = _MAX_TOOL_ROUNDS_PER_TURN
+            rounds_left = self._tool_rounds
             for _attempt in range(self._max_attempts):
                 candidate, rounds_used = self._run_attempt(messages, sim, rounds_left)
                 rounds_left -= rounds_used
@@ -383,14 +401,19 @@ class LLMAgent:
                     return candidate
                 if rounds_left <= 0:
                     break
-            return SAFE_DUD
+            # Round cap hit without a text commit: fire the model's LAST
+            # probed expression — it chose it through real simulate feedback,
+            # which beats the safe dud. (The gateway ignores
+            # tool_choice "none", so a forced text commit cannot be relied
+            # on; this fallback guarantees the probing still pays off.)
+            return self._last_probe_expr or SAFE_DUD
         except Exception:  # noqa: BLE001 - the match must never crash on one turn
             # Unrecoverable after the API retries (e.g. the gateway killed
             # every regeneration): degrade this turn to the safe dud,
             # accounted like the runner's defensive malformed-emission branch.
             self._stats.parse_failures += 1
             self._stats.retries += 1
-            return SAFE_DUD
+            return self._last_probe_expr or SAFE_DUD
         finally:
             self._stats.simulate_calls += sim.calls_used
             self._stats.simulate_denied += sim.denied_used
@@ -464,7 +487,9 @@ class LLMAgent:
             response = self._create(messages, force_commit=force_commit)
             used += 1
             if response.stop_reason == "tool_use":
-                self._dispatch_tool_round(response, sim, messages)
+                self._dispatch_tool_round(
+                    response, sim, messages, commit_warning=rounds_left - used <= _COMMIT_ROUNDS
+                )
                 continue
             expr = _extract_candidate(_response_text(response))
             messages.append({"role": "assistant", "content": response.content})
@@ -486,6 +511,7 @@ class LLMAgent:
         response: Any,
         sim: BudgetedSimulator,
         messages: list[dict[str, Any]],
+        commit_warning: bool = False,
     ) -> None:
         """Answer every tool_use block through the budgeted simulator.
 
@@ -493,7 +519,12 @@ class LLMAgent:
         wrapper raises before touching the oracle); the JSON payload carries
         exactly the SimResult fields the system prompt promises. An unknown
         tool name gets an error result too, so the conversation stays
-        API-valid.
+        API-valid. With unlimited budgets the DENIAL never fires, so
+        ``commit_warning`` rides the last probing round instead: the same
+        commit-now signal the denial text carries, as a user text block
+        after the tool results (measured: the model commits on that signal;
+        it never commits on its own, and the gateway ignores
+        tool_choice "none").
         """
         tool_results: list[dict[str, Any]] = []
         for block in response.content:
@@ -525,11 +556,21 @@ class LLMAgent:
                     }
                 )
                 continue
+            self._last_probe_expr = expr
             tool_results.append(
                 {
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
                     "content": _sim_result_json(result),
+                }
+            )
+        if commit_warning:
+            tool_results.append(
+                {
+                    "type": "text",
+                    "text": "That was your last probe of the turn — commit your best "
+                    "expression NOW: reply with ONLY the bare y = f(x) expression on "
+                    "one line, no tool calls.",
                 }
             )
         messages.append({"role": "assistant", "content": response.content})

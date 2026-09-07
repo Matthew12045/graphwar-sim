@@ -24,6 +24,8 @@ expression still reaches the physics only through the ported parser inside
 
 from __future__ import annotations
 
+import sys
+
 from graphwar_sim import Game
 
 from .simulate_tool import SimResult, simulate
@@ -64,7 +66,14 @@ class BudgetedSimulator:
       :attr:`calls_used` / :attr:`denied_used`).
     - :attr:`remaining` is the string-ready count for the M5.5.6 feedback
       format ("simulate_tool calls remaining: N"); it never goes negative
-      (denied calls don't consume).
+      (denied calls don't consume). ``budget=None`` means UNLIMITED (the
+      M5.4 user-locked live default): :meth:`simulate` never denies and
+      :attr:`remaining` reports :data:`sys.maxsize` (check
+      :attr:`unlimited` when formatting the message).
+
+    No ``eval``/``exec``/dynamic import (repo security ground rule); the
+    expression still reaches the physics only through the ported parser inside
+    ``simulate_tool.simulate``.
     """
 
     __slots__ = (
@@ -78,7 +87,9 @@ class BudgetedSimulator:
         "turn_log",
     )
 
-    def __init__(self, game: Game, budget: int = DEFAULT_SIMULATE_BUDGET) -> None:
+    def __init__(self, game: Game, budget: int | None = DEFAULT_SIMULATE_BUDGET) -> None:
+        """``budget=None`` = unlimited this turn (never denies); an int is a
+        hard per-turn call cap."""
         self._game = game
         self._budget = budget
         self._calls_used = 0
@@ -92,12 +103,13 @@ class BudgetedSimulator:
         """Fire ``expr`` through the pure oracle against this turn's budget.
 
         Budget is checked FIRST: an over-budget call is recorded as denied
-        and raises without delegating. A delegated call counts regardless of
-        whether the expression parses. Delegation is a pass-through — the
-        returned :class:`~agents.simulate_tool.SimResult` is exactly what a
-        direct ``simulate(self._game, expr)`` call would return (purity).
+        and raises without delegating (``budget=None`` never denies — every
+        call delegates). A delegated call counts regardless of whether the
+        expression parses. Delegation is a pass-through — the returned
+        :class:`~agents.simulate_tool.SimResult` is exactly what a direct
+        ``simulate(self._game, expr)`` call would return (purity).
         """
-        if self._turn_spent():
+        if self._budget is not None and self._turn_spent():
             self._record_denied()
             raise SimulateBudgetExhausted()
         self._calls_used += 1
@@ -120,8 +132,18 @@ class BudgetedSimulator:
 
     @property
     def remaining(self) -> int:
-        """Simulate calls this turn can still delegate (never negative)."""
+        """Simulate calls this turn can still delegate (never negative).
+
+        Unlimited budgets report :data:`sys.maxsize` (see :attr:`unlimited`).
+        """
+        if self._budget is None:
+            return sys.maxsize
         return max(0, self._budget - self._turn_calls)
+
+    @property
+    def unlimited(self) -> bool:
+        """True when this turn's budget is unlimited (no denials ever)."""
+        return self._budget is None
 
     @property
     def calls_used(self) -> int:
@@ -136,6 +158,7 @@ class BudgetedSimulator:
     # -- internals ------------------------------------------------------------
 
     def _turn_spent(self) -> bool:
+        assert self._budget is not None  # only called on the budgeted path
         return self._turn_calls >= self._budget
 
     def _record_denied(self) -> None:
