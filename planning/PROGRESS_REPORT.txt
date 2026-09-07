@@ -334,5 +334,80 @@ Three commits, one per slice, subjects prefixed M5.4:
   model reads the telemetry is unverified). The miss diagnosis continues in
   the next session (probe scripts + geometric post-mortem in the OS temp
   dir: diagnose_miss.py, diagnose_miss_data.json, postmortem.py).
+
+  MISS-DIAGNOSIS CLOSURE (2026-09-07, next session — plan
+  .kilo/plans/1788765682980-llm-miss-guardrail-plan.md, 3 commits + notes):
+
+  GATE 1 (evidence before code):
+    1a. Offline telemetry sanity: an INDEPENDENT geometric re-march (muzzle
+        transform replicated from physics.py:170-189 + a circle/band march
+        with the integrator's step discipline: 0.01 base step, halving vs
+        the distance cap, end_func at the min step, NaN defeating the
+        halving) agrees with the oracle's miss telemetry on all five
+        constructed cases: off_map over the seed-21 muzzle rock; terrain
+        into it ~0.9-1.0 units right of the muzzle (incl. the live "0*x"
+        story); short via a log-pole end_func (the pole is approached
+        asymptotically, never crossed); passed to the right edge (seed 12);
+        nearest_miss/miss_direction within 0.15 world of prediction.
+        -> the telemetry is truthful; H3 RULED OUT.
+    1b. Live transcript dump (seed 21, 2 turns, make_agent + spy on
+        _create): turn 1 = H1b-shaped — 4 distinct probes ALL terrain-dead
+        on the muzzle rock, then the model's FINAL probe scored a clean
+        enemy HIT (nm 0.035); no text commit ever landed (r5 died at the
+        gateway) and the last-probe fallback fired the hit expr. Turn 2 =
+        pure infrastructure failure (3 consecutive gateway deaths inside
+        _create's retries, 380s) -> the documented safe-dud degradation.
+    1c. Classification: H1b + Fix 3b SUPPORTED (the muzzle wall kept
+        winning: 5/5 early probe instances died ascending into the rock,
+        ~200s of gateway time burned per turn re-learning it); H2/Fix 3a
+        NOT observed (no misread-dead commit); H3 ruled out.
+
+  FIXES SHIPPED (offline, TDD, zero network; graphwar_sim/ byte-identical):
+    1. Commit guardrail (9e4c383): a validated candidate is oracle-checked
+       through the SAME BudgetedSimulator (one extra call; skipped when no
+       probe ran — it cannot change the outcome then) and the turn's BEST
+       probed expression fires instead when the commit is STRICTLY worse by
+       _probe_score: hit rank (clean enemy hit 0 / no hit 1 / TEAMMATE hit
+       2 — critical failure, never preferred), reach rank (hit|passed 0
+       else 1 — reach is the hard part on walled boards), nearest_miss
+       tiebreak (inf when None; unparseable probes rank worst). Ties go to
+       the commit. The except-fallback prefers the best probe over the
+       merely-last one. AgentStats/AgentMatchStats gain guardrail_overrides
+       (+ the runner merge line); simulate_calls now counts ALL oracle
+       calls including the check (documented semantics change; 3 existing
+       counter assertions updated, none weakened).
+    2. Telemetry echo in the commit nudge (3b82620): the warning now
+       carries the last probe's expr + nearest_miss / miss_direction /
+       stopped_at_x / stop_reason and the per-reason fix direction, one
+       short block (wall headroom); no echo when no probe ran.
+    3. Muzzle-wall turn warning (9b678a0): terrain within ~2.5 world units
+       RIGHT of the muzzle and ~2 vertical gets a deterministic
+       "launch DESCENDING" line in the turn message (evidence: Gate 1b).
+    Gates per commit: mypy --strict clean; ruff check/format clean; full
+    pytest green (--ignore=tests/golden).
+
+  GATE 3 (live validation, headless make_agent, llm vs itself, 6 turns /
+  3 seeds, one turn per invocation) — SUCCESS BAR MET:
+    seed 21 T1: 4 probes, nearest_miss 34.7 -> 34.7 -> 9.3 (convergence),
+      best probe fired via the round-cap fallback after a gateway death on
+      the commit round; MISS (off_map, nm 9.3, reached x=7.6 vs enemy 16.9).
+    seed 21 T2: 4 probes (2 calls/round), best probe fired (fallback); MISS.
+    seed  7 T1: 3 probes (the last a clean enemy hit, nm 0.039), the model
+      committed THAT expr, the commit-check TIED -> fired -> ENEMY KILL.
+    seed  7 T2: 4 sigmoid probes (terrain, nm 29.5-30.7), best probe fired
+      (fallback after a commit-round death); MISS (terrain, nm 29.5).
+    seed 33 T1: 3 probes + text commit of the probed hit (nm 0.054) ->
+      ENEMY KILL.
+    seed 33 T2: 1 probe + text commit (nm 0.050) -> ENEMY KILL (27s turn).
+    Bar (a) MET: every fired expr scored >= its turn's best probe (5/6
+      fired the best probe exactly; ZERO guardrail overrides needed — the
+      commits were never strictly worse this run; the +1 commit-check call
+      per turn is the documented cost). Bar (b) MET: 3 enemy kills, within-
+      turn nearest_miss convergence, zero friendly-fire.
+  Residual: seed 21 stays the hard board (0 hits in 2 turns) but probes now
+  CONVERGE within the turn instead of re-dying on the muzzle rock; the
+  best-probe fallback carried 2/6 turns past gateway deaths on the commit
+  round (and produced the Gate 1b turn-1 hit). The commit guardrail remains
+  as insurance: its strictly-better override has not yet fired live.
 ==============================================================================
 END OF REPORT
