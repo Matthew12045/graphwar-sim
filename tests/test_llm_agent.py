@@ -633,3 +633,41 @@ def test_guardrail_override_flows_through_play_match() -> None:
     agent = _agent([_tool_use("sim-1", "0*x"), _text("-1.4117(x+18.117)")])
     result = play_match(21, agent, StraightShotAgent(), MatchConfig(num_soldiers=2, max_turns=2))
     assert result.stats["llm:fake-model"].guardrail_overrides == 1
+
+
+# --- 10. telemetry echo in the commit nudge (M5.4 Fix 2) -----------------------
+
+
+class _UnknownToolBlock:
+    def __init__(self, id: str) -> None:  # noqa: A002 - mirrors the wire field
+        self.type = "tool_use"
+        self.id = id
+        self.name = "other_tool"
+        self.input = {}
+
+
+def test_commit_warning_echoes_the_last_probe_telemetry() -> None:
+    """When the commit nudge fires, it carries the last probe's identity and
+    telemetry so the model can commit its best probe or fix exactly its
+    failure (the live diagnosis: the commit never re-read old results)."""
+    agent = _agent([_tool_use("sim-1", "0*x"), _text("1(x+18.117)")], tool_rounds=3)
+    game, obs = _seed21_game_and_obs()
+    assert agent.act(game, obs) == "1(x+18.117)"
+    warning = agent._client.messages.calls[1]["messages"][-1]["content"][-1]["text"]
+    assert warning.startswith("That was your last probe of the turn")
+    assert "Your last probe '0*x'" in warning
+    assert "nearest_miss=34.725" in warning
+    assert "miss_direction=low" in warning
+    assert "stop_reason=terrain" in warning
+    assert "commit THAT expression" in warning
+
+
+def test_commit_warning_has_no_echo_without_a_probe() -> None:
+    """No oracle-reaching probe this turn -> the plain nudge only (the echo
+    cannot invent telemetry)."""
+    agent = _agent([_Response("tool_use", [_UnknownToolBlock("u-1")]), _text("0*x")], tool_rounds=2)
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "0*x"
+    warning = agent._client.messages.calls[1]["messages"][-1]["content"][-1]["text"]
+    assert "commit your best expression NOW" in warning
+    assert "Your last probe" not in warning

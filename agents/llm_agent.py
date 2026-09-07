@@ -353,6 +353,27 @@ def _turn_message(obs: Observation, remaining: int | str) -> str:
     return "\n".join(lines)
 
 
+def _commit_echo(expr: str | None, result: SimResult | None) -> str:
+    """The telemetry echo appended to the commit nudge (M5.4 Fix 2): repeat
+    the last probe's identity + telemetry so the model can commit its best
+    probe or fix exactly that failure instead of re-deriving from memory (the
+    live diagnosis: commits ignored what earlier rounds had measured). One
+    short block — the gateway's wall headroom. Empty when no probe ran (the
+    echo cannot invent telemetry)."""
+    if expr is None or result is None:
+        return ""
+    nearest = round(result.nearest_miss, 3) if result.nearest_miss is not None else None
+    stop_x = round(result.stopped_at_x, 2) if result.stopped_at_x is not None else None
+    return (
+        f"Your last probe '{expr}' -> nearest_miss={nearest}, "
+        f"miss_direction={result.miss_direction}, stopped_at_x={stop_x}, "
+        f"stop_reason={result.stop_reason} — commit THAT expression if it was "
+        "your best; otherwise fix exactly its failure (off_map: bring the "
+        "curve's peak under y=14.6; terrain at the muzzle: launch descending; "
+        "short: increase reach)."
+    )
+
+
 def _build_client() -> Any:
     """Construct the Anthropic client from the Claude-Code-style environment.
 
@@ -661,14 +682,15 @@ class LLMAgent:
                 }
             )
         if commit_warning:
-            tool_results.append(
-                {
-                    "type": "text",
-                    "text": "That was your last probe of the turn — commit your best "
-                    "expression NOW: reply with ONLY the bare y = f(x) expression on "
-                    "one line, no tool calls.",
-                }
+            text = (
+                "That was your last probe of the turn — commit your best "
+                "expression NOW: reply with ONLY the bare y = f(x) expression on "
+                "one line, no tool calls."
             )
+            echo = _commit_echo(self._last_probe_expr, self._last_probe_result)
+            if echo:
+                text = f"{text} {echo}"
+            tool_results.append({"type": "text", "text": text})
         messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": tool_results})
 
