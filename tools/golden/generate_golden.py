@@ -58,28 +58,43 @@ SCENARIOS: list[tuple[str, str, int, tuple[int, int], list[list[int]], list[list
     # Soldiers placed on the baseline trajectory (sampled from the reference)
     # so the shot genuinely strikes several; also exercises dedup (a soldier
     # whose path is revisited is only recorded once).
-    ("multi_soldier", "x^2*0.01", 0, (50, 400),
-     [(50, 400, 1), (87, 415, 1), (118, 426, 1), (148, 436, 1)], []),
+    (
+        "multi_soldier",
+        "x^2*0.01",
+        0,
+        (50, 400),
+        [(50, 400, 1), (87, 415, 1), (118, 426, 1), (148, 436, 1)],
+        [],
+    ),
     ("dead_soldier", "x^2*0.01", 0, (50, 400), [(50, 400, 1), (56, 403, 0)], []),
     # --- Terrain: exact collidePoint grid (anti-aliased oval fill). Circles are
     # placed on the trajectory so the shot genuinely terminates at the terrain.
-    ("terrain_block", "x^2*0.01", 0, (50, 400), [(50, 400, 1)],
-     [(120, 430, 40)]),
-    ("terrain_mirror", "x^2*0.01", 1, (720, 400), [(720, 400, 1)],
-     [(650, 430, 40)]),
-    ("terrain_hit", "x^2*0.01", 0, (50, 400), [(50, 400, 1), (87, 415, 1)],
-     [(150, 438, 40)]),
+    ("terrain_block", "x^2*0.01", 0, (50, 400), [(50, 400, 1)], [(120, 430, 40)]),
+    ("terrain_mirror", "x^2*0.01", 1, (720, 400), [(720, 400, 1)], [(650, 430, 40)]),
+    ("terrain_hit", "x^2*0.01", 0, (50, 400), [(50, 400, 1), (87, 415, 1)], [(150, 438, 40)]),
     # --- Positional variety.
     ("center_shooter", "x*0.1", 0, (385, 400), [(385, 400, 1)], []),
     ("high_shooter", "x^2*0.01", 0, (50, 100), [(50, 100, 1)], []),
 ]
 
 
-def _run_reference(func: str, inverted: int, shooter: tuple[int, int],
-                   soldiers: list[list[int]], circles: list[list[int]]) -> list[str]:
+def _run_reference(
+    func: str,
+    inverted: int,
+    shooter: tuple[int, int],
+    soldiers: list[list[int]],
+    circles: list[list[int]],
+) -> list[str]:
     """Invoke the compiled Java reference and return its stdout lines."""
-    args = ["java", "-cp", "bin", "Graphwar.GoldenShot", func, str(inverted),
-            f"{shooter[0]},{shooter[1]}"]
+    args = [
+        "java",
+        "-cp",
+        "bin",
+        "Graphwar.GoldenShot",
+        func,
+        str(inverted),
+        f"{shooter[0]},{shooter[1]}",
+    ]
     for s in soldiers:
         args.append(f"{s[0]},{s[1]},{s[2]}")
     for c in circles:
@@ -87,15 +102,18 @@ def _run_reference(func: str, inverted: int, shooter: tuple[int, int],
     proc = subprocess.run(args, cwd=REF_DIR, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(
-            f"reference failed for func={func!r} rc={proc.returncode}\n"
-            f"stderr:\n{proc.stderr}")
+            f"reference failed for func={func!r} rc={proc.returncode}\nstderr:\n{proc.stderr}"
+        )
     return proc.stdout.strip().splitlines()
 
 
 def main() -> int:
     if not (REF_DIR / "bin" / "Graphwar" / "GoldenShot.class").exists():
-        print("error: GoldenShot.class not found; build the reference first "
-              "(see ref/graphwar/compile.sh)", file=sys.stderr)
+        print(
+            "error: GoldenShot.class not found; build the reference first "
+            "(see ref/graphwar/compile.sh)",
+            file=sys.stderr,
+        )
         return 1
 
     records: list[dict] = []
@@ -103,32 +121,36 @@ def main() -> int:
         lines = _run_reference(func, inverted, shooter, soldiers, circles)
         shot = json.loads(lines[0])
         grid = json.loads(lines[1]) if len(lines) > 1 else None
-        records.append({
-            "name": name,
-            "func": func,
-            "inverted": inverted,
-            "shooter": list(shooter),
-            "soldiers": soldiers,
-            "circles": circles,
-            "ref": {
-                "numSteps": shot["numSteps"],
-                "lastX": shot["lastX"],
-                "lastY": shot["lastY"],
-                "hits": shot["hits"],
-                "points": shot["points"],
-                "grid": grid,
-            },
-        })
+        records.append(
+            {
+                "name": name,
+                "func": func,
+                "inverted": inverted,
+                "shooter": list(shooter),
+                "soldiers": soldiers,
+                "circles": circles,
+                "ref": {
+                    "numSteps": shot["numSteps"],
+                    "lastX": shot["lastX"],
+                    "lastY": shot["lastY"],
+                    "hits": shot["hits"],
+                    "points": shot["points"],
+                    "grid": grid,
+                },
+            }
+        )
         npts = len(shot["points"])
         nhits = len(shot["hits"])
-        print(f"  {name:20s} steps={shot['numSteps']:6d} hits={nhits} "
-              f"pts={npts} grid={'yes' if grid else 'no'}")
+        print(
+            f"  {name:20s} steps={shot['numSteps']:6d} hits={nhits} "
+            f"pts={npts} grid={'yes' if grid else 'no'}"
+        )
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with OUT_PATH.open("w") as f:
         json.dump(records, f)
     size = OUT_PATH.stat().st_size
-    print(f"\nwrote {len(records)} scenarios to {OUT_PATH} ({size/1024:.1f} KiB)")
+    print(f"\nwrote {len(records)} scenarios to {OUT_PATH} ({size / 1024:.1f} KiB)")
     return 0
 
 

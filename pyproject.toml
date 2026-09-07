@@ -42,6 +42,11 @@ addopts = "-q"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = [
+    # Superseded design drafts (see sketches/README.md): never imported or run;
+    # hand-aligned formatting is part of the historical record. Not linted.
+    "sketches",
+]
 
 [tool.ruff.lint]
 select = [

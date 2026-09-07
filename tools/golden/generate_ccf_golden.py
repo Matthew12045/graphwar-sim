@@ -63,15 +63,25 @@ _MAX_CANDIDATES = 2
 
 
 def _run_reference(
-    func: str, inverted: int, shooter: tuple[int, int],
-    soldiers: list[list[int]], circles: list[tuple[int, int, int]],
+    func: str,
+    inverted: int,
+    shooter: tuple[int, int],
+    soldiers: list[list[int]],
+    circles: list[tuple[int, int, int]],
 ) -> list[str]:
     """Invoke the compiled Java reference and return its stdout lines.
 
     Identical mechanism to ``tools/golden/generate_golden.py``.
     """
-    args = ["java", "-cp", "bin", "Graphwar.GoldenShot", func, str(inverted),
-            f"{shooter[0]},{shooter[1]}"]
+    args = [
+        "java",
+        "-cp",
+        "bin",
+        "Graphwar.GoldenShot",
+        func,
+        str(inverted),
+        f"{shooter[0]},{shooter[1]}",
+    ]
     for s in soldiers:
         args.append(f"{s[0]},{s[1]},{s[2]}")
     for c in circles:
@@ -79,8 +89,8 @@ def _run_reference(
     proc = subprocess.run(args, cwd=REF_DIR, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(
-            f"reference failed for func={func!r} rc={proc.returncode}\n"
-            f"stderr:\n{proc.stderr}")
+            f"reference failed for func={func!r} rc={proc.returncode}\nstderr:\n{proc.stderr}"
+        )
     return proc.stdout.strip().splitlines()
 
 
@@ -91,9 +101,7 @@ def _clears_in_sim(seed: int, cand: ccf.CCFCandidate) -> tuple[bool, float]:
     fr = shooter_frame(fresh)
     shooter = fresh.state.current_team().current_soldier()
     f = PolishNotationFunction(cand.expression)
-    result = process_function_range(
-        f, shooter, fresh.all_soldiers(), fresh.terrain, fr.inverted
-    )
+    result = process_function_range(f, shooter, fresh.all_soldiers(), fresh.terrain, fr.inverted)
     px = result.points[-1][0]
     if fr.inverted:
         px = config.PLANE_LENGTH - px
@@ -108,7 +116,6 @@ def _probe_scenario(seed: int) -> tuple[dict, list[dict]] | None:
     candidate worth pinning."""
     game = Game.create(seed, num_soldiers=_NUM_SOLDIERS)
     res = ccf.solve_for_game(game)
-    fr = shooter_frame(game)
     team = game.state.current_team()
     shooter = team.current_soldier()
     inverted = 1 if team.team == config.TEAM2 else 0
@@ -117,22 +124,26 @@ def _probe_scenario(seed: int) -> tuple[dict, list[dict]] | None:
     circles = [list(c) for c in game.circles]
 
     kept: list[dict] = []
-    for cand in res.candidates[: _MAX_CANDIDATES]:
+    for cand in res.candidates[:_MAX_CANDIDATES]:
         if cand.certified:
             ok, reached = _clears_in_sim(seed, cand)
             if not ok:
                 # A real CLEARANCE claim failure: report loudly, don't pin it.
-                print(f"    note: seed={seed} CERTIFIED candidate does not clear "
-                      f"in-sim (reached u={reached:.3f}) -- not pinned as golden",
-                      file=sys.stderr)
+                print(
+                    f"    note: seed={seed} CERTIFIED candidate does not clear "
+                    f"in-sim (reached u={reached:.3f}) -- not pinned as golden",
+                    file=sys.stderr,
+                )
                 continue
-        kept.append({
-            "expression": cand.expression,
-            "target_index": cand.target_index,
-            "sigma": cand.sigma,
-            "mode": cand.mode,
-            "certified": cand.certified,
-        })
+        kept.append(
+            {
+                "expression": cand.expression,
+                "target_index": cand.target_index,
+                "sigma": cand.sigma,
+                "mode": cand.mode,
+                "certified": cand.certified,
+            }
+        )
     if not kept:
         return None
 
@@ -149,8 +160,11 @@ def _probe_scenario(seed: int) -> tuple[dict, list[dict]] | None:
 
 def main() -> int:
     if not (REF_DIR / "bin" / "Graphwar" / "GoldenShot.class").exists():
-        print("error: GoldenShot.class not found; build the reference first "
-              "(see ref/graphwar/compile.sh)", file=sys.stderr)
+        print(
+            "error: GoldenShot.class not found; build the reference first "
+            "(see ref/graphwar/compile.sh)",
+            file=sys.stderr,
+        )
         return 1
 
     scenarios: list[dict] = []
@@ -165,8 +179,13 @@ def main() -> int:
         candidates_out: list[dict] = []
         for cand_rec in kept:
             func = cand_rec["expression"]
-            lines = _run_reference(func, scenario["inverted"], tuple(scenario["shooter"]),
-                                   scenario["soldiers"], scenario["circles"])
+            lines = _run_reference(
+                func,
+                scenario["inverted"],
+                tuple(scenario["shooter"]),
+                scenario["soldiers"],
+                scenario["circles"],
+            )
             shot = json.loads(lines[0])
             grid = json.loads(lines[1]) if len(lines) > 1 else None
             cand_out = dict(cand_rec)
@@ -191,9 +210,11 @@ def main() -> int:
     size = OUT_PATH.stat().st_size
     total_cert = sum(1 for s in scenarios for c in s["candidates"] if c["certified"])
     total_uncert = sum(1 for s in scenarios for c in s["candidates"] if not c["certified"])
-    print(f"\nwrote {len(scenarios)} scenarios to {OUT_PATH} "
-          f"({size/1024:.1f} KiB); candidates: {total_cert} certified, "
-          f"{total_uncert} uncertified")
+    print(
+        f"\nwrote {len(scenarios)} scenarios to {OUT_PATH} "
+        f"({size / 1024:.1f} KiB); candidates: {total_cert} certified, "
+        f"{total_uncert} uncertified"
+    )
     return 0
 
 

@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from graphwar_sim import MalformedFunction, PolishNotationFunction
-from graphwar_sim import config
+from graphwar_sim import MalformedFunction, PolishNotationFunction, config
 from graphwar_sim.state import Game
 
 # (func, expected_value_at_x) — accepted, and evaluated at x=2.0.

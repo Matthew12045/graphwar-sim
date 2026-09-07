@@ -68,7 +68,10 @@ def _curvature_bound_check(w, sigma, centers) -> None:
     absolute term keeps the case ``||w||_1 ~ 0`` deterministic.
     """
     b_coeff = 1.0 / (2.0 * sigma * sigma)
-    terms = [emission.gauss_term(float(wi), float(cj), b_coeff) for wi, cj in zip(w, centers)]
+    terms = [
+        emission.gauss_term(float(wi), float(cj), b_coeff)
+        for wi, cj in zip(w, centers, strict=True)
+    ]
     expr = emission.balanced_sum(terms)
     f = _ppn(expr)
 
@@ -159,8 +162,7 @@ def test_emission_budget_reproduced() -> None:
     w = np.full(budget.j_max, -1.0)
     expr = ccf._emit(w, centers, sigma_rep, -1.234567890123, -12.345678901234, mx=0.0)
     assert len(expr) <= char_limit, (
-        f"J_max={budget.j_max} emission length {len(expr)} exceeds "
-        f"MAX_EXPR_CHARS={char_limit}"
+        f"J_max={budget.j_max} emission length {len(expr)} exceeds MAX_EXPR_CHARS={char_limit}"
     )
     _ppn(expr)  # the emitted expression must parse (incl. the depth cap)
 
@@ -317,8 +319,18 @@ def test_solve_milp_timeout_sentinel_has_zero_weights() -> None:
     ccf.milp = lambda **_: _TimedOut()  # type: ignore[assignment]
     try:
         sol = ccf._solve_milp(
-            centers, phi, us, L, H, exempt, sigma=0.5, u_T=2.0, dy_T=0.0,
-            mode="tight", j_max=7, time_budget=0.0,
+            centers,
+            phi,
+            us,
+            L,
+            H,
+            exempt,
+            sigma=0.5,
+            u_T=2.0,
+            dy_T=0.0,
+            mode="tight",
+            j_max=7,
+            time_budget=0.0,
         )
     finally:
         ccf.milp = original_milp
@@ -388,6 +400,4 @@ def test_grep_no_cvxpy_import() -> None:
     for p in files:
         src = p.read_text()
         for m in re.finditer(r"(?m)^\s*(?:import|from)\s+cvxpy\b", src):
-            raise AssertionError(
-                f"{p.name}:{m.start()}: cvxpy imported/used (forbidden by §11)"
-            )
+            raise AssertionError(f"{p.name}:{m.start()}: cvxpy imported/used (forbidden by §11)")

@@ -40,14 +40,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from agents import Agent, hit_team_counts, observe
-from eval.metrics import ShotOutcome
-from eval.runner import _classify, _peek_solver_rung, make_agent
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from agents import Agent, hit_team_counts, observe
+from eval.runner import _classify, _peek_solver_rung, make_agent
 from graphwar_sim import TEAM1, TEAM2, config
 from graphwar_sim.parser import MalformedFunction, PolishNotationFunction
 from graphwar_sim.physics import ShotResult, Soldier, _get_start_angle
@@ -169,9 +168,7 @@ def _finite_or_none(value: float) -> float | None:
 
 def _shot_json(shot: ShotResult) -> dict[str, Any]:
     return {
-        "points": [
-            [_finite_or_none(x), _finite_or_none(y)] for x, y in shot.points
-        ],
+        "points": [[_finite_or_none(x), _finite_or_none(y)] for x, y in shot.points],
         "hits": [list(hit) for hit in shot.hits],
         "last_x": _finite_or_none(shot.last_x),
         "last_y": _finite_or_none(shot.last_y),
@@ -196,8 +193,12 @@ def _display_start_angle(func_str: str, shooter: Soldier, inverted: bool) -> flo
     values_x, values_y = shooter.x, shooter.y
     if inverted:
         values_x = config.PLANE_LENGTH - values_x
-    values_x = (config.PLANE_GAME_LENGTH * (values_x - config.PLANE_LENGTH // 2)) / config.PLANE_LENGTH
-    values_y = (config.PLANE_GAME_LENGTH * (-values_y + config.PLANE_HEIGHT // 2)) / config.PLANE_LENGTH
+    values_x = (
+        config.PLANE_GAME_LENGTH * (values_x - config.PLANE_LENGTH // 2)
+    ) / config.PLANE_LENGTH
+    values_y = (
+        config.PLANE_GAME_LENGTH * (-values_y + config.PLANE_HEIGHT // 2)
+    ) / config.PLANE_LENGTH
     radius = (config.PLANE_GAME_LENGTH * config.SOLDIER_RADIUS) / config.PLANE_LENGTH
 
     angle = _get_start_angle(f, values_x, radius)

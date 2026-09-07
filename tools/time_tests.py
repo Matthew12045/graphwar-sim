@@ -3,6 +3,7 @@
 
 Usage: python3 tools/time_tests.py [max_seconds_per_file]
 """
+
 import signal
 import subprocess
 import sys
@@ -16,10 +17,13 @@ for f in ["test_parser", "test_golden", "test_solver", "test_agents", "test_corr
     t0 = time.time()
     proc = subprocess.Popen(
         ["python3", "-m", "pytest", f"tests/{f}.py", "-q", "--tb=line"],
-        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
 
-    def kill(signum, frame):
+    def kill(signum, frame, proc=proc):
         proc.kill()
 
     signal.signal(signal.SIGALRM, kill)

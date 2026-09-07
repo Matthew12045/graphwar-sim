@@ -105,8 +105,7 @@ def _replay_java_parity(scenario: dict, candidate: dict) -> dict:
     soldiers: list[Soldier] = []
     shooter: Soldier | None = None
     for i, (sx, sy, alive) in enumerate(scenario["soldiers"]):
-        s = Soldier(x=float(sx), y=float(sy), alive=bool(alive),
-                     player_index=i, soldier_index=0)
+        s = Soldier(x=float(sx), y=float(sy), alive=bool(alive), player_index=i, soldier_index=0)
         soldiers.append(s)
         if (sx, sy) == tuple(shooter_xy):
             shooter = s
@@ -143,9 +142,7 @@ def test_java_reference_parity(scenario: dict, candidate: dict) -> None:
     assert _close(got["lastY"], ref["lastY"]), (
         f"{scenario['name']}: lastY {got['lastY']!r} != {ref['lastY']!r}"
     )
-    assert got["hits"] == ref["hits"], (
-        f"{scenario['name']}: hits {got['hits']} != {ref['hits']}"
-    )
+    assert got["hits"] == ref["hits"], f"{scenario['name']}: hits {got['hits']} != {ref['hits']}"
     assert len(got["points"]) == len(ref["points"]), (
         f"{scenario['name']}: {len(got['points'])} points != {len(ref['points'])}"
     )
@@ -162,9 +159,7 @@ def _fire_in_sim(seed: int, num_soldiers: int, expression: str):
     fr = shooter_frame(game)
     shooter = game.state.current_team().current_soldier()
     f = PolishNotationFunction(expression)
-    result = process_function_range(
-        f, shooter, game.all_soldiers(), game.terrain, fr.inverted
-    )
+    result = process_function_range(f, shooter, game.all_soldiers(), game.terrain, fr.inverted)
     return result, fr, game, shooter
 
 
@@ -179,9 +174,7 @@ def _reached_u(result, fr) -> float:
 
 
 @pytest.mark.parametrize(("scenario", "candidate"), CASES, ids=CASE_IDS)
-def test_in_sim_no_teammates_and_certified_clearance(
-    scenario: dict, candidate: dict
-) -> None:
+def test_in_sim_no_teammates_and_certified_clearance(scenario: dict, candidate: dict) -> None:
     """Rebuild the Game, fire through the real physics: no friendly fire for
     every candidate, and zero terrain collisions (trajectory reaches the goal
     column) for CERTIFIED candidates."""
