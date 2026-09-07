@@ -307,5 +307,32 @@ Three commits, one per slice, subjects prefixed M5.4:
   and won; all simulate counters merged). Cross-checked against the
   sumbit project (same gateway, same buffered-thinking finding, worked
   around with long timeouts — the effort cap is the cleaner fix).
+
+  POST-RESOLUTION TUNING (same session, user-locked decisions): output
+  budget restored to the full 128k (effort-capped thinking makes it pure
+  headroom; measured 128000 accepted, a round concluding in 10.7s).
+  Simulate budget made UNLIMITED by default (BudgetedSimulator(budget=None)
+  never denies; turn message says "unlimited") with two compensations for
+  the lost denial stop-signal: a commit-nudge text block rides the probing
+  round that enters the last-2-rounds window, and the round cap falls back
+  to firing the model's LAST probed expression instead of the safe dud
+  (the gateway ignores tool_choice, so a forced text commit cannot be
+  relied on).
+
+  MISS DIAGNOSIS (subagent, 3 seeds): the LLM's curves were often 0.04-0.09
+  world units ON TARGET at the enemy's x while dying 20-34 world short —
+  plane-band kills (peak y 14.98 > +14.61) and a terrain wall at the muzzle
+  (seed 21: every probe ascended into a rock; the solver launches
+  DESCENDING and clears). The binary simulate feedback was the blocker: a
+  0.1-world miss and a 25-world miss were indistinguishable. Fix shipped
+  (6f71dc6): SimResult miss telemetry (nearest_miss, miss_direction,
+  stopped_at_x, stop_reason) computed post-hoc in simulate_tool (physics
+  stays byte-identical) + HARD RULES in the system prompt (the y in
+  [-14.6, +14.6] band, the terrain kill, "check the muzzle rock, launch
+  DESCENDING"). OPEN: the post-fix live validation still missed 3/3 turns
+  (one committed vertex y=17.81 is still above the band top — whether the
+  model reads the telemetry is unverified). The miss diagnosis continues in
+  the next session (probe scripts + geometric post-mortem in the OS temp
+  dir: diagnose_miss.py, diagnose_miss_data.json, postmortem.py).
 ==============================================================================
 END OF REPORT
