@@ -18,3 +18,9 @@ tools/jar_probe/out/
 
 # OS / editor
 .DS_Store
+
+# Session plans / agent state (Kilo) stay local — never committed
+.kilo/
+
+# Hidden directories stay local
+.*/
