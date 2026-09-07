@@ -671,3 +671,56 @@ def test_commit_warning_has_no_echo_without_a_probe() -> None:
     warning = agent._client.messages.calls[1]["messages"][-1]["content"][-1]["text"]
     assert "commit your best expression NOW" in warning
     assert "Your last probe" not in warning
+
+
+# --- 11. muzzle-wall warning in the turn message (M5.4 Fix 3b) -----------------
+
+
+def _obs_with_terrain(blocks: tuple[tuple[float, float], ...]) -> Any:
+    from agents.base import FRAME_CENTERED_WORLD, Observation
+
+    return Observation(
+        frame=FRAME_CENTERED_WORLD,
+        turn_index=0,
+        team_id=1,
+        shooter=(-18.1, 7.5),
+        own_soldiers=((-18.1, 7.5),),
+        enemy_soldiers=((16.9, 14.1),),
+        terrain_blocks=blocks,
+        ascii_board="",
+    )
+
+
+def test_turn_message_warns_about_a_muzzle_wall() -> None:
+    """A terrain block just RIGHT of the muzzle (within ~2.5 x, ~2 y) gets a
+    deterministic descending-launch warning — the seed-21 live failure (every
+    early probe ascended into the muzzle rock)."""
+    from agents.llm_agent import _turn_message
+
+    obs = _obs_with_terrain(((-17.2, 7.8), (5.0, -5.0)))
+    message = _turn_message(obs, "unlimited")
+    assert "terrain wall at (x~-17.2, y~7.8) just right of your muzzle" in message
+    assert "launch DESCENDING" in message
+
+
+def test_turn_message_no_warning_for_far_or_left_terrain() -> None:
+    """Terrain left of the muzzle, or beyond the scan radii, warns nothing."""
+    from agents.llm_agent import _turn_message
+
+    for blocks in (
+        ((-20.0, 7.5), (5.0, -5.0)),  # left of the muzzle
+        ((-14.0, 7.5), (5.0, -5.0)),  # >2.5 right
+        ((-17.5, 12.0), (5.0, -5.0)),  # >2 above
+    ):
+        message = _turn_message(_obs_with_terrain(blocks), "unlimited")
+        assert "terrain wall" not in message, blocks
+
+
+def test_seed21_turn_message_carries_the_muzzle_warning() -> None:
+    """The live-diagnosis board triggers the warning (integration of the
+    construction with the real observation)."""
+    from agents.llm_agent import _turn_message
+
+    _, obs = _seed21_game_and_obs()
+    message = _turn_message(obs, "unlimited")
+    assert "just right of your muzzle" in message

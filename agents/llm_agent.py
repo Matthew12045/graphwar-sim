@@ -151,6 +151,14 @@ _BUDGET_EXHAUSTED_TEXT = "simulate budget exhausted — commit your best express
 # # TUNABLE — not from source (derives from observation.py's _TERRAIN_STEP).
 _TERRAIN_RUN_GAP: float = 1.5
 
+# Muzzle-wall warning scan radii (world units) for the turn message (M5.4
+# Fix 3b): terrain within this box just RIGHT of the muzzle kills ascending
+# launches (the seed-21 live diagnosis: every early probe died on the rock
+# ~0.9 units right of the muzzle before the model learned to descend).
+# # TUNABLE — not from source.
+_MUZZLE_WALL_DX: float = 2.5
+_MUZZLE_WALL_DY: float = 2.0
+
 _SIMULATE_TOOL: dict[str, Any] = {
     "name": "simulate",
     "description": "Fire a candidate y=f(x) through the real physics WITHOUT "
@@ -325,6 +333,30 @@ def _terrain_lines(blocks: tuple[tuple[float, float], ...]) -> list[str]:
     return lines
 
 
+def _muzzle_wall_warning(obs: Observation) -> str | None:
+    """Deterministic warning when terrain sits just RIGHT of the muzzle —
+    ascending launches die on it, so say so up front (M5.4 Fix 3b; the live
+    diagnosis burned 3+ probes per turn re-learning this). Reports the
+    NEAREST qualifying block. ``None`` when none qualifies."""
+    mx, my = obs.shooter
+    best: tuple[float, float, float] | None = None
+    for bx, by in obs.terrain_blocks:
+        dx = bx - mx
+        if not 0.0 < dx <= _MUZZLE_WALL_DX:
+            continue
+        if abs(by - my) > _MUZZLE_WALL_DY:
+            continue
+        if best is None or dx < best[0]:
+            best = (dx, bx, by)
+    if best is None:
+        return None
+    _, bx, by = best
+    return (
+        f"WARNING: terrain wall at (x~{bx:.1f}, y~{by:.1f}) just right of your "
+        "muzzle — ascending launches die on it; launch DESCENDING."
+    )
+
+
 def _turn_message(obs: Observation, remaining: int | str) -> str:
     """The per-turn user message: the observation verbatim + live budget
     (``remaining`` is a count, or the string ``"unlimited"``)."""
@@ -347,9 +379,16 @@ def _turn_message(obs: Observation, remaining: int | str) -> str:
         f"enemies (nearest first): {', '.join(fmt(p) for p in obs.enemy_soldiers) or 'none'}",
         "terrain blocks (coarse ~1-unit grid, horizontal runs per row):",
         *_terrain_lines(obs.terrain_blocks),
-        "",
-        f"simulate calls remaining: {remaining}",
     ]
+    warning = _muzzle_wall_warning(obs)
+    if warning is not None:
+        lines.extend(["", warning])
+    lines.extend(
+        [
+            "",
+            f"simulate calls remaining: {remaining}",
+        ]
+    )
     return "\n".join(lines)
 
 
