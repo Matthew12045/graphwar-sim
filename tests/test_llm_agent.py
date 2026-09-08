@@ -250,9 +250,11 @@ def test_budget_burn_does_not_consume_an_attempt() -> None:
 
 
 def test_last_rounds_force_text_only_commit() -> None:
-    """The last _COMMIT_ROUNDS rounds set tool_choice "none" so a stochastic
-    thinker must emit the bare expression instead of another tool call."""
-    agent = _agent([_Response("max_tokens", [])] * 6 + [_text("0.05*x")])
+    """Under an explicit round cap, the last _COMMIT_ROUNDS rounds set
+    tool_choice "none" so a stochastic thinker must emit the bare expression
+    instead of another tool call. (Uncapped, the default, there is no commit
+    window — hence the explicit tool_rounds=8 here.)"""
+    agent = _agent([_Response("max_tokens", [])] * 6 + [_text("0.05*x")], tool_rounds=8)
     game, obs = _game_and_obs()
     assert agent.act(game, obs) == "0.05*x"
     calls = agent._client.messages.calls

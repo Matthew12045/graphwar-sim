@@ -101,13 +101,15 @@ from .simulate_tool import SimResult
 SAFE_DUD: str = "0*x"
 
 # Total emission attempts per turn (each attempt = API round-trips until a
-# final answer, capped by _MAX_TOOL_ROUNDS_PER_TURN). Exhaustion returns the
-# safe dud. # TUNABLE — not from source.
+# final answer; rounds per attempt are uncapped unless tool_rounds is set).
+# Exhaustion returns the safe dud. # TUNABLE — not from source.
 _DEFAULT_MAX_ATTEMPTS: int = 4
 
-# API round-trips allowed per TURN (the plan caps total round-trips per
-# turn; a budget-burned round costs one but does not end an attempt).
-# # TUNABLE — not from source.
+# The standard API round-trip cap per TURN, for callers that want one
+# (eval ablation grids); the live default is UNLIMITED (``tool_rounds=None``)
+# — a turn ends on a commit, an attempts exhaustion, or the UI cancel, never
+# on a round count. A budget-burned round costs one round but does not end an
+# attempt. # TUNABLE — not from source.
 _MAX_TOOL_ROUNDS_PER_TURN: int = 8
 
 # The last rounds of a turn force a text-only commit (tool_choice "none") —
@@ -229,7 +231,9 @@ critical failure.
 
 HARD RULES: the playable plane is y in [-14.6, +14.6]; the shot is KILLED \
 the instant the curve leaves that band or touches '#' terrain — it must \
-survive all the way to the enemy's x. Check the terrain immediately to the \
+survive all the way to the enemy's x. Terrain is INDESTRUCTIBLE \
+(destructible terrain is a planned mechanic, not yet live): never route \
+through rock expecting a blast path. Check the terrain immediately to the \
 right of your own muzzle first: if it is a wall, launch DESCENDING so the \
 auto-offset still lifts the curve while it slips under or around the rock.
 
@@ -253,9 +257,9 @@ error, nearest_miss, miss_direction, stopped_at_x, stop_reason}: \
 nearest_miss = world-unit distance from the nearest enemy (~0.45 = hit), \
 miss_direction = "high"/"low" (which side of the enemy the curve passed \
 on), stopped_at_x = the world x where the shot ended, stop_reason = "hit" \
-| "terrain" | "off_map" | "short" | "passed". You have a limited per-turn \
-budget of calls (each turn message states the remaining count). Revise. \
-Then commit.
+| "terrain" | "off_map" | "short" | "passed". There is no cap on rounds — \
+probe as much as you need (your per-turn simulate allowance is stated in \
+each turn message; "unlimited" means no cap). Revise. Then commit.
 
 OUTPUT: after your final simulate call, emit ONLY the bare expression on \
 one line (no "y =", no prose, no code fence).\
@@ -516,10 +520,11 @@ class LLMAgent:
         # M5.3-style ablation grid (BudgetedSimulator handles the cap and
         # the denial accounting either way).
         self._simulate_budget = simulate_budget
-        # API round-trips per turn: the loop terminator (a turn ends on a
-        # commit, an attempts exhaustion, or this cap). None -> module
-        # default.
-        self._tool_rounds = tool_rounds if tool_rounds is not None else _MAX_TOOL_ROUNDS_PER_TURN
+        # API round-trips per turn: None (the default) is UNLIMITED — a
+        # turn ends on a commit, an attempts exhaustion, or the Slice C
+        # cancel, never on a round count. Pass an int for a hard cap (eval
+        # ablation grids; the last _COMMIT_ROUNDS then force a text commit).
+        self._tool_rounds: int | None = tool_rounds
         # Slice C cancellation: a callback polled between API rounds (the UI
         # server passes its module-level threading.Event.is_set; eval passes
         # nothing). Checked between retries in _create and between rounds in
@@ -591,7 +596,7 @@ class LLMAgent:
             messages: list[dict[str, Any]] = [
                 {"role": "user", "content": _turn_message(obs, budget_text)}
             ]
-            rounds_left = self._tool_rounds
+            rounds_left: float = float("inf") if self._tool_rounds is None else self._tool_rounds
             candidate: str | None = None
             for _attempt in range(self._max_attempts):
                 found, rounds_used = self._run_attempt(messages, sim, rounds_left)
@@ -778,19 +783,21 @@ class LLMAgent:
         self,
         messages: list[dict[str, Any]],
         sim: BudgetedSimulator,
-        rounds_left: int,
+        rounds_left: float,
     ) -> tuple[str | None, int]:
-        """One attempt within the turn's TOTAL round budget (the plan caps
-        API round-trips per TURN, not per attempt — a stochastic thinker
-        needs every round it can get; a budget-burned round with no usable
-        text is counted and corrected but does NOT consume an attempt).
+        """One attempt within the turn's round allowance (uncapped by
+        default: a stochastic thinker needs every round it can get; a
+        budget-burned round with no usable text is counted and corrected
+        but does NOT consume an attempt).
 
         Returns ``(candidate | None, rounds_consumed)``. ``None`` moves the
-        caller to the next attempt: a malformed candidate, or the turn
-        round-cap breach. The last ``_COMMIT_ROUNDS`` rounds force a
-        text-only commit (``tool_choice: "none"``). Every failed emission
-        increments the parse-failure/retry counters and queues a correction
-        message for the re-call.
+        caller to the next attempt: a malformed candidate, or (under an
+        explicit cap) the round-cap breach. Under a cap, the last
+        ``_COMMIT_ROUNDS`` rounds force a text-only commit (``tool_choice:
+        "none"``); uncapped, there is no commit window and the turn ends on
+        the model's own end-turn, the cancel, or an error. Every failed
+        emission increments the parse-failure/retry counters and queues a
+        correction message for the re-call.
         """
         used = 0
         while used < rounds_left:

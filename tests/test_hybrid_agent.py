@@ -328,7 +328,8 @@ def test_ladder_tie_break_drops_the_tightest_waypoint(monkeypatch: pytest.Monkey
 
 def test_unreachable_stops_the_ladder_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
     """UNREACHABLE is never the waypoints' fault: no waypoint is dropped and
-    the report says so explicitly (M5.5.5)."""
+    the report says so explicitly (M5.5.5). The middle rung still fires the
+    M2 best-effort shot instead of the dud."""
 
     def fake_solve_target(*args: Any, waypoints: Any = (), **kwargs: Any) -> CCFSolution:
         return _sol(CCFOutcome.UNREACHABLE, "")
@@ -341,10 +342,13 @@ def test_unreachable_stops_the_ladder_immediately(monkeypatch: pytest.MonkeyPatc
     agent = _hybrid_agent([_plan_text(plan_text)])
     game, obs = _game_and_obs()
     expr = agent.act(game, obs)
-    assert expr == SAFE_DUD
     stats = agent.stats()
     assert stats.waypoints_dropped == 0
     assert stats.ccf_unreachable == 1
+    assert stats.m2_fallbacks == 1
+    from agents.simulate_tool import simulate
+
+    assert simulate(game, expr).parseable
     feedback = agent._last_feedback or ""
     assert "UNREACHABLE" in feedback
     assert "Your plan was NOT the problem" in feedback
@@ -352,16 +356,50 @@ def test_unreachable_stops_the_ladder_immediately(monkeypatch: pytest.MonkeyPatc
 
 def test_zero_waypoint_infeasible_reported_explicitly() -> None:
     """seed 4: the bare solve is infeasible with ZERO waypoints — the plan
-    was never the problem (M5.5.5) and the dud is fired."""
+    was never the problem (M5.5.5). The report still says so, but the turn
+    fires the M2 best-effort rung (``arc`` here) instead of the dud."""
     game, obs = _game_and_obs(4)
     agent = _hybrid_agent([_plan_text(EMPTY_PLAN)])
     expr = agent.act(game, obs)
-    assert expr == SAFE_DUD
+    assert expr != SAFE_DUD
     stats = agent.stats()
     assert stats.ccf_infeasible == 1
+    assert stats.m2_fallbacks == 1
     feedback = agent._last_feedback or ""
     assert "BASIS_INFEASIBLE" in feedback
     assert "Your plan was NOT the problem" in feedback
+
+
+def test_magician_miss_board_fires_m2_double_kill() -> None:
+    """Regression for the live-demo Master Magician miss (seed 1605663942):
+    after the solver's opening turn the corridor to the tight enemy cluster
+    admits ZERO CCF branches — the plan was never the problem — so the turn
+    must fire the M2 best-effort rung (a simulated double kill), not the dud.
+    """
+    from agents.simulate_tool import simulate
+    from agents.solver_agent import SolverAgent
+
+    game = Game.create(1605663942, num_soldiers=2)
+    opener = SolverAgent()
+    game.play_turn(opener.act(game, observe(game)))
+    obs = observe(game)
+    magician_plan = (
+        '{"target_id": "enemy_0", "secondary_targets": ["enemy_1"], '
+        '"branch_hint": "over", "waypoints": ['
+        '{"u": 15.0, "y": 2.5, "tol": 3.0, "priority": 1}, '
+        '{"u": 25.0, "y": 4.0, "tol": 3.0, "priority": 2}], '
+        '"style": "master_magician", "rationale": "tight cluster, over-arc"}'
+    )
+    agent = _hybrid_agent([_plan_text(magician_plan)], persona="master_magician")
+    expr = agent.act(game, obs)
+    assert expr != SAFE_DUD
+    stats = agent.stats()
+    assert stats.ccf_infeasible == 1
+    assert stats.waypoints_dropped == 2
+    assert stats.m2_fallbacks == 1
+    sim = simulate(game, expr)
+    assert sim.hit_enemy and not sim.hit_teammate
+    assert sim.num_hits == 2
 
 
 # --- corridor summary (M5.5.7: bands pre-applied) ------------------------------------

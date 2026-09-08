@@ -23,7 +23,10 @@ Turn structure:
    infeasible solve (ties: most-binding = tightest tol — the documented
    approximation; LP duals are not on the solver's public surface), until
    feasible, ``UNREACHABLE`` (never the waypoints' fault — reported and
-   stopped), or zero waypoints (reported EXPLICITLY per M5.5.5);
+   stopped), or zero waypoints (reported EXPLICITLY per M5.5.5). When no
+   curve certifies, the middle degradation rung fires the deterministic M2
+   best-effort shot (:func:`graphwar_sim.solver.solve`) instead of the dud —
+   certified first, best effort second, safe dud last;
 4. the M5.5.6 feedback (outcome, binding + sigma, dropped/applied waypoint
    names, emitted length, remaining simulate budget — NEVER the expression)
    rides the next turn's message.
@@ -38,9 +41,10 @@ enemies (prompt-method + the M5.4 verifier carry the multi-hit game — no new
 solver path, per the plan's M5.4.3 note).
 
 Counters: ``schema_errors``, ``waypoints_applied`` / ``waypoints_dropped``
-(the winning attempt's bookkeeping), and the cert outcome counts
+(the winning attempt's bookkeeping), the cert outcome counts
 ``ccf_certified`` / ``ccf_uncertified`` / ``ccf_infeasible`` /
-``ccf_unreachable`` (``EMIT_OVERFLOW`` folds into ``ccf_infeasible``).
+``ccf_unreachable`` (``EMIT_OVERFLOW`` folds into ``ccf_infeasible``), and
+``m2_fallbacks`` (turns the middle rung saved from the dud).
 
 The M5.5.5 relaxation ladder is module-level (:func:`solve_plan_with_ladder`)
 so the D4 battery (``eval/run_ccf_battery.py --waypoints``) drives the SAME
@@ -73,6 +77,7 @@ from graphwar_sim.corridor import (
     map_y_bounds,
     shooter_frame,
 )
+from graphwar_sim.solver import solve as m2_solve
 
 from .base import Observation
 from .llm_agent import (
@@ -98,7 +103,10 @@ You plan artillery shots. You do NOT write mathematical expressions.
 
 A certified solver turns your plan into a curve. It proves the curve clears \
 terrain and teammates, or it tells you exactly why it cannot. Your job is to \
-choose targets and suggest a route shape. The solver's job is the math.
+choose targets and suggest a route shape. The solver's job is the math. \
+Terrain is INDESTRUCTIBLE (destructible terrain is a planned mechanic, not \
+yet live): the solver routes around rock, never through it — plan clearance \
+accordingly.
 
 Coordinates are SHOOTER-RELATIVE: your soldier is at (0, 0). Positive u is \
 toward the target. All values you emit use this frame.
@@ -130,8 +138,10 @@ tell you which it dropped. Do not try to force a curve by over-specifying: \
 three loose waypoints beat eight tight ones. If you do not know where the \
 curve should go, return an empty waypoint list and let the solver decide.
 
-You have a limited simulate_tool budget per turn. Spend it on genuine \
-uncertainty, not on confirming a plan the solver already certified."""
+There is no cap on API rounds — take the probes you need, but spend \
+them on genuine uncertainty, not on confirming a plan the solver \
+already certified. Your per-turn simulate_tool allowance is stated in \
+the turn message ("unlimited" means no cap)."""
 
 
 # M5.5.7: the persona shape prior (prepended to the turn message; the persona
@@ -453,11 +463,12 @@ class HybridAgent(LLMAgent):
     """M5.5: plans through the LLM, shoots through the certified CCF solver.
 
     ``act`` returns the CCF-compiled expression for the LLM's waypoint plan
-    (or the safe dud when no plan lands or no curve certifies). The LLM's
-    raw text is never emitted and never reaches the parser (M5.5.8
-    isolation). Streaming/retry/cancel/event-sink/budgeted-simulate machinery
-    is inherited from :class:`LLMAgent` (the Slice C cancel checks ride the
-    same ``_create`` path).
+    (the M2 best-effort rung when no curve certifies, the safe dud only when
+    no plan lands or that fails too). The LLM's raw text is never emitted
+    and never reaches the parser (M5.5.8 isolation). Streaming/retry/cancel/
+    event-sink/budgeted-simulate machinery is inherited from
+    :class:`LLMAgent` (the Slice C cancel checks ride the same ``_create``
+    path).
     """
 
     def __init__(
@@ -494,7 +505,8 @@ class HybridAgent(LLMAgent):
 
     def act(self, game: Game, obs: Observation) -> str:
         """One hybrid turn: plan JSON -> validate -> CCF solve -> relax ->
-        fire the solver's expression (or the safe dud)."""
+        fire the solver's expression (the M2 best-effort rung when nothing
+        certifies, the safe dud only when that fails too)."""
         sim = BudgetedSimulator(game, budget=self._simulate_budget)
         sim.new_turn()
         self._last_assistant_text = None
@@ -513,10 +525,17 @@ class HybridAgent(LLMAgent):
                 if plan is not None:
                     solve = self._solve_with_ladder(fr, targets, plan, sim)
                     feedback = solve.feedback
+                    self._stats.waypoints_applied += solve.applied
+                    self._stats.waypoints_dropped += solve.dropped
                     if solve.expression is not None:
                         expr = solve.expression
-                        self._stats.waypoints_applied += solve.applied
-                        self._stats.waypoints_dropped += solve.dropped
+                    else:
+                        # No certifiable curve (infeasible / unreachable /
+                        # overflow): the middle degradation rung — the
+                        # deterministic M2 best-effort shot — before the dud.
+                        # A proved-blocked corridor still dud-commits when M2
+                        # also passes, but any hittable board gets a real shot.
+                        expr = self._m2_fallback(game)
                     self._bump_outcome_counter(solve.outcome)
         except Exception:  # noqa: BLE001 - the match must never crash on one turn
             self._stats.parse_failures += 1
@@ -539,6 +558,21 @@ class HybridAgent(LLMAgent):
             self._stats.ccf_unreachable += 1
         else:
             self._stats.ccf_infeasible += 1
+
+    def _m2_fallback(self, game: Game) -> str:
+        """The middle degradation rung: no CCF curve certified, so fire the
+        deterministic M2 solver's best-effort expression instead of the dud
+        (the dud stays only for an M2 failure, which never happens in
+        practice — :func:`graphwar_sim.solver.solve` always emits). The M2
+        output is solver-generated, never LLM text, so M5.5.8 isolation is
+        untouched; ``except Exception`` mirrors :meth:`act` (a
+        ``TurnCancelled`` is a ``BaseException`` and still propagates).
+        """
+        self._stats.m2_fallbacks += 1
+        try:
+            return m2_solve(game).expression
+        except Exception:  # noqa: BLE001 - the match must never crash on one turn
+            return SAFE_DUD
 
     def _turn_message(self, fr: ShooterFrame, sim: BudgetedSimulator, turn_index: int) -> str:
         """The M5.5.2 turn message: shooter-relative geometry + corridor
@@ -591,12 +625,13 @@ class HybridAgent(LLMAgent):
 
         Schema errors are corrected in-loop WITHOUT burning a solver attempt
         (``schema_errors`` is its own counter); the budgeted simulate tool
-        stays available between rounds. ``None`` when the round budget is
-        spent without a valid plan.
+        stays available between rounds. ``None`` when an explicit round cap
+        is spent without a valid plan (uncapped, the loop runs until a plan
+        lands, the cancel fires, or an error aborts).
         """
         band_world = map_y_bounds()
         target_u_T = {tid: targets[i][0] - mx for i, tid in enumerate(target_ids)}
-        rounds_left = self._tool_rounds
+        rounds_left: float = float("inf") if self._tool_rounds is None else self._tool_rounds
         used = 0
         while used < rounds_left:
             self._check_cancel()

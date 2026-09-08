@@ -410,4 +410,13 @@ Three commits, one per slice, subjects prefixed M5.4:
   round (and produced the Gate 1b turn-1 hit). The commit guardrail remains
   as insurance: its strictly-better override has not yet fired live.
 ==============================================================================
+PLANNED (not started, owner: Matt): destructible terrain
+  Shots crater rock — blasts shrink/remove terrain circles and open corridors
+  mid-match. When it lands, the sim (blast vs. circle resolution), the CCF
+  corridor/branch DP, the M2 ladder, and both system prompts must learn the
+  new mechanic. The prompts already carry the placeholder context
+  ("INDESTRUCTIBLE ... planned mechanic, not yet live" in llm_agent.py
+  _SYSTEM_PROMPT and hybrid_agent.py _hybrid_system_prompt), so the rule flip
+  is a physics + wording change, not a prompt redesign. Recorded 2026-09-08.
+==============================================================================
 END OF REPORT

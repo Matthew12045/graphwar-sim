@@ -111,7 +111,10 @@ class AgentStats:
     # burns an API round, never a solver attempt — M5.5.3); the waypoint
     # bookkeeping counts the winning attempt (applied) and every drop
     # (relaxation + interval-emptying); the CCF cert outcome counts roll up
-    # per turn (EMIT_OVERFLOW folds into ``ccf_infeasible``).
+    # per turn (EMIT_OVERFLOW folds into ``ccf_infeasible``); ``m2_fallbacks``
+    # counts turns where no curve certified and the deterministic M2
+    # best-effort rung fired instead of the safe dud (the hybrid's middle
+    # degradation rung — certified first, best effort second, dud last).
     schema_errors: int = 0
     waypoints_applied: int = 0
     waypoints_dropped: int = 0
@@ -119,6 +122,7 @@ class AgentStats:
     ccf_uncertified: int = 0
     ccf_infeasible: int = 0
     ccf_unreachable: int = 0
+    m2_fallbacks: int = 0
 
 
 @runtime_checkable
