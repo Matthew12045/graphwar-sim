@@ -288,16 +288,18 @@ class _PassingAgent:
 
 def test_passer_match_classifies_every_turn() -> None:
     """A match of two passing agents: every turn is PASS_UNREACHABLE, the
-    shots never count (hit rate 0/0), the repeats are suppressed, and the
-    match ends as DRAW_STALEMATE before the turn cap."""
+    shots never count (hit rate 0/0), and the match ends as DRAW_STALEMATE
+    before the turn cap. Since destructible terrain landed, every pass still
+    carves — so consecutive passes face different terrain and are all
+    recorded (crater-aware dedupe: nothing is suppressed)."""
     seed = 7
     r = play_match(seed, _PassingAgent("passer_a"), _PassingAgent("passer_b"), _small_config())
     for st in r.stats.values():
-        # Two pass turns per agent (one recorded, one suppressed repeat).
+        # Two pass turns per agent, both recorded (craters differ each turn).
         assert st.pass_unreachable == 2
         assert st.enemy_hit_shots == 0
-        assert st.shots == 1  # only the first of each identical pair
-        assert st.repeat_suppressed == 1
+        assert st.shots == 2
+        assert st.repeat_suppressed == 0
     assert r.draw_reason == "STALEMATE"
     assert r.winner is None
     assert r.turns == _STALL_LIMIT  # ends exactly at the stall limit
@@ -305,14 +307,25 @@ def test_passer_match_classifies_every_turn() -> None:
 
 
 def test_dedupe_suppresses_identical_repeats() -> None:
-    """Same board state + same expression on an agent's next turn is not a new
-    attempt: repeat_suppressed grows and the shot counter does not."""
+    """Crater-aware dedupe (:func:`eval.runner._state_hash`): the key covers
+    soldiers + shooter + crater count, so an identical expression on truly
+    identical state suppresses, while any intervening blast (carve count
+    changed) makes it a new attempt."""
+    from eval.runner import _state_hash
+    from graphwar_sim import Game
+
+    game = Game.create(7, num_soldiers=2)
+    before = _state_hash(game)
+    assert _state_hash(game) == before  # deterministic without a fire
+    game.fire("0*x")  # the blast appends exactly one crater
+    assert len(game.carves) == 1
+    assert _state_hash(game) != before  # digging turns are never repeats
+
+    # And in a real passing match nothing suppresses (every turn carves).
     r = play_match(7, _PassingAgent("passer_a"), _PassingAgent("passer_b"), _small_config())
-    # Turn 0 (T1) and 1 (T2) are recorded; turns 2 (T1 again) and 3 (T2 again)
-    # repeat the identical (state, expression) pair and are suppressed.
     for st in r.stats.values():
-        assert st.shots == 1
-        assert st.repeat_suppressed == 1
+        assert st.shots == 2
+        assert st.repeat_suppressed == 0
 
 
 def test_stalemate_ends_match_as_draw_distinct_from_cap(tmp_path: Path) -> None:

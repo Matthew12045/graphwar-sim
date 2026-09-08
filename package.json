@@ -1,0 +1,24 @@
+{
+  "name": "graph_war",
+  "version": "1.0.0",
+  "description": "A headless, faithful reimplementation of the artillery game **Graphwar**, in which a shot's trajectory is the graph of a function `y = f(x)` typed by the player. The goal is to reproduce the behavior of the original Java client (`ref/graphwar/`, GPL-licensed) closely enough to (a) run reproducible games and (b) later plug in LLM agents and evaluate them.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Matthew12045/graphwar-sim.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Matthew12045/graphwar-sim/issues"
+  },
+  "homepage": "https://github.com/Matthew12045/graphwar-sim#readme"
+}

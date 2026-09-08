@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 
 from . import config
 from .parser import PolishNotationFunction
-from .physics import Obstacle, ShotResult, Soldier, process_function_range
+from .physics import Obstacle, ShotResult, Soldier, _java_int_cast, process_function_range
 
 
 @dataclass
@@ -162,7 +162,7 @@ def make_circle_obstacle(
             return True
         return grid[y][x]
 
-    return Obstacle(collide_point=collide_point)
+    return Obstacle(collide_point=collide_point, grid=grid)
 
 
 class Game:
@@ -174,7 +174,11 @@ class Game:
     """
 
     def __init__(
-        self, state: GameState, terrain: Obstacle, circles: list[tuple[int, int, int]] | None = None
+        self,
+        state: GameState,
+        terrain: Obstacle,
+        circles: list[tuple[int, int, int]] | None = None,
+        carves: list[tuple[int, int, int]] | None = None,
     ) -> None:
         self.state = state
         self.terrain = terrain
@@ -182,6 +186,12 @@ class Game:
         # sweep can compute exact free intervals instead of sampling the
         # obstacle grid (graphwar_sim/corridor.py).
         self.circles: list[tuple[int, int, int]] = circles if circles is not None else []
+        # Blast craters in plane px (x, y, r), TRUE plane coords (x already
+        # mirrored at fire time, exactly like ``circles`` from generate_map).
+        # Every fire appends one entry (GameData.java:1020-1032); the terrain
+        # grid itself is carved at the same time. Corridor/CCF subtract these
+        # disks from the circle-blocked rows (graphwar_sim/corridor.py).
+        self.carves: list[tuple[int, int, int]] = carves if carves is not None else []
 
     # -- construction -------------------------------------------------------
 
@@ -245,6 +255,23 @@ class Game:
         # Apply kills (GameData.java:1102-1111).
         for player_index, soldier_index, _pos in result.hits:
             self.state.teams[player_index].soldiers[soldier_index].alive = False
+        # Destructible terrain (GameData.java:1020-1032): every shot ends in a
+        # blast that carves an EXPLOSION_RADIUS crater at its last point. The
+        # reference mirrors x for a reversed (TEAM2) function
+        # (GameData.java:1023-1026: PLANE_LENGTH - (int)lastX); the physics
+        # deliberately does NOT apply that mirror to last_x/last_y
+        # (physics.py:272-274), so it is applied here. Java (int) narrowing
+        # via _java_int_cast. Never affects the current shot (computed after
+        # process_function_range returns); fires on every path (terrain, hit,
+        # NaN, off-field — the graphics context clips off-map ovals).
+        ex = (
+            config.PLANE_LENGTH - _java_int_cast(result.last_x)
+            if inverted
+            else _java_int_cast(result.last_x)
+        )
+        ey = _java_int_cast(result.last_y)
+        self.terrain.carve(ex, ey, config.EXPLOSION_RADIUS)
+        self.carves.append((ex, ey, config.EXPLOSION_RADIUS))
         return result
 
     def play_turn(self, func_str: str) -> ShotResult:

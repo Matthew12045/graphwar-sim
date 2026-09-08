@@ -72,6 +72,18 @@ All pixel coordinates are the reference's 800×600 window space.
 - Terrain circles come from the server; the client just draws the raster it
   is given (`GameData` obstacle image). This project's `Game.circles`
   (`graphwar_sim/state.py:184`) is the equivalent input.
+- Destructible terrain: every shot ends in a blast that carves an
+  `EXPLOSION_RADIUS = 12` px crater (`Obstacle.explodePoint`,
+  `Obstacle.java:118-121`; `Game.fire` in `graphwar_sim/state.py`). The board
+  JSON carries `carves` alongside `circles` (`ui/server.py::_board_json`); the
+  frontend punches them as white-filled circles after the black terrain
+  (`ui/static/app.js::draw`). Craters persist for the match; a fresh `Game`
+  resets them.
+- Think-bubble growth: `#think-bubble` grows with content up to
+  `max-height: 300px` (# TUNABLE) instead of scrolling inside 120px, and
+  `THINK_LINE_CAP = 14` (# TUNABLE) accumulates lines so the box visibly
+  increases as messages arrive (`ui/static/style.css`, `ui/static/app.js`).
+  Autoscroll + `positionThinkBubble` clamping are unchanged.
 
 ### 2.2 Soldiers
 

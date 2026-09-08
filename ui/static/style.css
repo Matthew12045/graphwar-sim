@@ -196,7 +196,7 @@ body {
 #think-bubble {
   position: absolute;
   max-width: 260px;
-  max-height: 120px;
+  max-height: 300px; /* # TUNABLE: grows with content up to the cap */
   overflow-y: auto;
   background: #fff;
   border: 2px solid var(--think-color, #000);

@@ -88,7 +88,7 @@ var deltaLine = null; // the growing line fed by ("delta", ...) events
 var deltaAgent = null; // the agent prefix the growing line was opened with
 
 // --- Thinking bubble (G5: LLM/hybrid turns only, reference-style popup) -------
-var THINK_LINE_CAP = 6; // keep the last ~6 lines (# TUNABLE)
+var THINK_LINE_CAP = 14; // keep the last ~14 lines (# TUNABLE)
 var thinkActive = false;
 var thinkLines = []; // [{text, commit}] compact bubble body lines
 
@@ -504,6 +504,14 @@ function draw(now) {
     ctx.arc(c[0], c[1], c[2], 0, Math.PI * 2);
     ctx.fill();
   });
+  if (board.carves) {
+    ctx.fillStyle = "#fff";
+    board.carves.forEach(function (c) {
+      ctx.beginPath();
+      ctx.arc(c[0], c[1], c[2], 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
 
   // axis cross (GraphPlane.java:279-282)
   ctx.strokeStyle = "#000";

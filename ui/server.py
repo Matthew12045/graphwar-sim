@@ -200,6 +200,9 @@ def _board_json(game: Game) -> dict[str, Any]:
         # Terrain as circles — the frontend draws filled circles directly
         # (do NOT rasterize the obstacle grid like render.py does).
         "circles": [list(circle) for circle in game.circles],
+        # Craters as (x, y, r) — the frontend punches them out in white
+        # (do NOT rasterize; same convention as circles).
+        "carves": [list(c) for c in game.carves],
         "finished": game.finished(),
         "winner": game.winner(),
         "turns_played": _turns_played,

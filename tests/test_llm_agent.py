@@ -1,10 +1,10 @@
-"""Tests for M5.4 Slice 1: :class:`agents.llm_agent.LLMAgent`.
+"""Tests for :class:`agents.llm_agent.LLMAgent` (single-shot: one API call,
+no tools, first output fires).
 
 Zero network: every test injects a fake client that mirrors ONLY the minimal
 response surface the agent relies on — ``messages.create(...)`` returning an
-object with ``.stop_reason`` and ``.content`` blocks (``.type == "text"`` with
-``.text``; ``.type == "tool_use"`` with ``.id``, ``.name``, ``.input``). The
-simulate probes run against the REAL budgeted oracle on a REAL seeded game.
+object with ``.stop_reason`` and ``.content`` blocks (``.type == "text"``
+with ``.text``).
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ import pytest
 
 from agents import StraightShotAgent
 from agents.llm_agent import (
-    _BUDGET_EXHAUSTED_TEXT,
     _SYSTEM_PROMPT,
     SAFE_DUD,
     LLMAgent,
@@ -31,14 +30,6 @@ class _TextBlock:
     def __init__(self, text: str) -> None:
         self.type = "text"
         self.text = text
-
-
-class _ToolUseBlock:
-    def __init__(self, id: str, expr: str) -> None:  # noqa: A002 - mirrors the wire field
-        self.type = "tool_use"
-        self.id = id
-        self.name = "simulate"
-        self.input = {"expr": expr}
 
 
 class _Response:
@@ -143,10 +134,6 @@ def _text(text: str) -> _Response:
     return _Response("end_turn", [_TextBlock(text)])
 
 
-def _tool_use(id: str, expr: str) -> _Response:  # noqa: A002
-    return _Response("tool_use", [_ToolUseBlock(id, expr)])
-
-
 def _agent(responses: list[_Response], **kwargs: Any) -> LLMAgent:
     return LLMAgent(model="fake-model", client=_FakeClient(responses), **kwargs)
 
@@ -173,133 +160,73 @@ def test_well_formed_first_response_verbatim_zero_counters() -> None:
     stats = agent.stats()
     assert stats.parse_failures == 0
     assert stats.retries == 0
-    # No probe ran, so the commit guardrail cannot compare and the commit
-    # check is skipped entirely: zero oracle calls, zero overrides.
+    # Single-shot, no oracle: zero calls, zero overrides, exactly one round.
     assert stats.simulate_calls == 0
     assert stats.simulate_denied == 0
     assert stats.guardrail_overrides == 0
+    assert len(agent._client.messages.calls) == 1
 
 
-def test_turn_message_states_live_simulate_budget() -> None:
+def test_single_call_offers_no_tools() -> None:
+    """The turn is one text-only round: no tools key, no tool_choice — the
+    model MUST answer in text and whatever it outputs first is fired."""
+    agent = _agent([_text("0.05*x")])
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "0.05*x"
+    calls = agent._client.messages.calls
+    assert len(calls) == 1
+    assert "tools" not in calls[0]
+    assert "tool_choice" not in calls[0]
+
+
+def test_turn_message_carries_clear_lanes_not_a_budget() -> None:
+    """The accuracy strategy is context, not iteration: the turn message
+    carries deterministic CLEAR LANE intervals (same world frame as the
+    emission) and no simulate-budget line."""
     agent = _agent([_text("0*x")])
     game, obs = _game_and_obs()
     agent.act(game, obs)
     first_message = agent._client.messages.calls[0]["messages"][0]["content"]
-    # User-locked live default: unlimited simulate calls.
-    assert "simulate calls remaining: unlimited" in first_message
     assert "shooter (you):" in first_message
     assert "enemies (nearest first):" in first_message
-
-    # An explicit int budget formats as the M5.5.6 count instead.
-    budgeted = _agent([_text("0*x")], simulate_budget=3)
-    budgeted.act(game, obs)
-    assert (
-        "simulate calls remaining: 3"
-        in budgeted._client.messages.calls[0]["messages"][0]["content"]
-    )
+    assert "CLEAR LANES" in first_message
+    assert "simulate" not in first_message
+    # Lane lines run from the muzzle toward the enemies in world x.
+    lane_lines = [line for line in first_message.splitlines() if line.startswith("x=")]
+    assert len(lane_lines) >= 2
+    assert all(".." in line or "BLOCKED" in line for line in lane_lines)
 
 
-# --- 2. malformed then corrected ---------------------------------------------
+# --- 2. malformed first output -> safe dud (no second attempt) ----------------
 
 
-def test_malformed_then_corrected_counts_and_correction_message() -> None:
-    agent = _agent([_text("(("), _text("0.05*x")])
+def test_malformed_first_output_fires_the_safe_dud() -> None:
+    """Single-shot means single-shot: a malformed emission counts
+    parse_failures/retries once and fires the dud — no correction round."""
+    agent = _agent([_text("((")])
     game, obs = _game_and_obs()
-    assert agent.act(game, obs) == "0.05*x"
+    assert agent.act(game, obs) == SAFE_DUD
     stats = agent.stats()
     assert stats.parse_failures == 1
     assert stats.retries == 1
     assert stats.simulate_calls == 0
+    assert len(agent._client.messages.calls) == 1  # no re-call
 
-    # The correction message quoted the reference-style (message-free)
-    # exception name.
-    second_call_messages = agent._client.messages.calls[1]["messages"]
-    correction = second_call_messages[-1]["content"]
-    assert "MalformedFunction" in correction
+
+def test_empty_output_fires_the_safe_dud() -> None:
+    """A max_tokens stop with no text (hidden-thinking burn) fires the dud."""
+    agent = _agent([_Response("max_tokens", [])])
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == SAFE_DUD
+    stats = agent.stats()
+    assert stats.parse_failures == 1
+    assert stats.retries == 1
 
 
 def test_y_equals_prefix_and_fences_are_stripped() -> None:
     agent = _agent([_text("```\ny = 0.05*x\n```")])
     game, obs = _game_and_obs()
     assert agent.act(game, obs) == "0.05*x"
-
-
-# --- 3. exhaustion -> safe dud ------------------------------------------------
-
-
-def test_all_attempts_malformed_returns_safe_dud() -> None:
-    agent = _agent([_text("(("), _text("))")], max_attempts=2)
-    game, obs = _game_and_obs()
-    assert agent.act(game, obs) == SAFE_DUD
-    stats = agent.stats()
-    assert stats.parse_failures == 2  # one per attempt
-    assert stats.retries == 2
-    assert stats.simulate_calls == 0
-
-
-def test_budget_burn_does_not_consume_an_attempt() -> None:
-    """A max_tokens stop with no text (hidden-thinking burn) is counted like
-    the plan's parse-failure path but the attempt keeps going — the next
-    round can still commit."""
-
-    agent = _agent([_Response("max_tokens", []), _text("0.05*x")])
-    assert agent.act(*_game_and_obs()) == "0.05*x"  # type: ignore[arg-type]
-    stats = agent.stats()
-    assert stats.parse_failures == 1  # the burn, not the commit
-    assert stats.retries == 1
-
-
-def test_last_rounds_force_text_only_commit() -> None:
-    """Under an explicit round cap, the last _COMMIT_ROUNDS rounds set
-    tool_choice "none" so a stochastic thinker must emit the bare expression
-    instead of another tool call. (Uncapped, the default, there is no commit
-    window — hence the explicit tool_rounds=8 here.)"""
-    agent = _agent([_Response("max_tokens", [])] * 6 + [_text("0.05*x")], tool_rounds=8)
-    game, obs = _game_and_obs()
-    assert agent.act(game, obs) == "0.05*x"
-    calls = agent._client.messages.calls
-    assert len(calls) == 7
-    assert "tool_choice" not in calls[0]
-    assert calls[6]["tool_choice"] == {"type": "none"}
-    stats = agent.stats()
-    assert stats.parse_failures == 6  # six burns, honest accounting
-
-
-def test_commit_warning_rides_the_tool_results() -> None:
-    """The commit-now signal (the denial text's message) rides the probing
-    round that enters the commit window — the model commits on that signal,
-    never on its own."""
-    agent = _agent(
-        [_tool_use("sim-1", "0.05*x"), _tool_use("sim-2", "0.1*x"), _text("0.1*x")],
-        tool_rounds=3,
-    )
-    game, obs = _game_and_obs()
-    assert agent.act(game, obs) == "0.1*x"
-    calls = agent._client.messages.calls
-    r1_user = calls[1]["messages"][-1]["content"]
-    assert isinstance(r1_user[0], dict) and r1_user[0]["tool_use_id"] == "sim-1"
-    assert "commit your best expression NOW" in r1_user[-1]["text"]  # warning rides r1
-    r2_user = calls[2]["messages"][-1]["content"]
-    assert "commit your best expression NOW" in r2_user[-1]["text"]
-
-
-def test_round_cap_falls_back_to_the_last_probed_expression() -> None:
-    """When the round cap hits without a text commit, the model's LAST probed
-    expression is fired instead of the safe dud (the gateway ignores
-    tool_choice "none"; the probing must still pay off)."""
-    agent = _agent(
-        [_tool_use("sim-1", "0.05*x"), _tool_use("sim-2", "0.1*x")],
-        tool_rounds=2,
-    )
-    game, obs = _game_and_obs()
-    assert agent.act(game, obs) == "0.1*x"  # the last probe, not SAFE_DUD
-    stats = agent.stats()
-    assert stats.simulate_calls == 2
-    assert stats.parse_failures == 0
-
-    # Without any probe the safe dud stands.
-    burns = _agent([_Response("max_tokens", [])] * 6 + [_text("(("), _text("((")])
-    assert burns.act(game, obs) == SAFE_DUD
 
 
 def test_unrecoverable_api_failure_degrades_to_safe_dud() -> None:
@@ -330,109 +257,7 @@ def test_unrecoverable_api_failure_degrades_to_safe_dud() -> None:
     assert agent._client.messages.attempts == 3  # 1 call + _MAX_API_RETRIES
 
 
-# --- 4. tool-use round routed through BudgetedSimulator -----------------------
-
-
-def test_unlimited_simulate_budget_never_denies() -> None:
-    """The M5.4 user-locked live default: every simulate call delegates, no
-    denial stop-signal fires, and the counters still record the calls."""
-    agent = _agent([_tool_use(f"sim-{i}", "0.05*x") for i in range(1, 6)] + [_text("0.05*x")])
-    game, obs = _game_and_obs()
-    assert agent.act(game, obs) == "0.05*x"
-    stats = agent.stats()
-    # 5 probes + the commit guardrail's check of the final candidate (M5.4:
-    # simulate_calls counts ALL oracle calls).
-    assert stats.simulate_calls == 6
-    assert stats.simulate_denied == 0
-    for call in agent._client.messages.calls[1:6]:
-        tool_result = call["messages"][-1]["content"][0]
-        assert tool_result.get("is_error") is not True
-
-
-def test_tool_use_round_returns_simresult_fields() -> None:
-    agent = _agent([_tool_use("sim-1", "0.05*x"), _text("0.05*x")])
-    game, obs = _game_and_obs()
-    assert agent.act(game, obs) == "0.05*x"
-    stats = agent.stats()
-    # 1 probe + the commit guardrail's check (M5.4 semantics).
-    assert stats.simulate_calls == 2
-    assert stats.simulate_denied == 0
-
-    second_call_messages = agent._client.messages.calls[1]["messages"]
-    assistant_content = second_call_messages[-2]["content"]
-    assert assistant_content[0].type == "tool_use"
-    assert assistant_content[0].input == {"expr": "0.05*x"}
-    tool_result = second_call_messages[-1]["content"][0]
-    assert tool_result["tool_use_id"] == "sim-1"
-    assert tool_result.get("is_error") is not True  # absent on success
-    import json
-
-    payload = json.loads(tool_result["content"])
-    assert set(payload) == {
-        "parseable",
-        "hit_enemy",
-        "hit_teammate",
-        "num_hits",
-        "error",
-        "nearest_miss",
-        "miss_direction",
-        "stopped_at_x",
-        "stop_reason",
-    }
-    assert payload["parseable"] is True
-    # Miss telemetry: a real gradient, not a binary coin (live diagnosis).
-    assert isinstance(payload["nearest_miss"], float)
-    assert payload["miss_direction"] in {"high", "low"}
-    assert isinstance(payload["stopped_at_x"], float)
-    assert payload["stop_reason"] in {"hit", "terrain", "off_map", "short", "passed"}
-
-
-# --- 5. budget denial: error result, no delegation -----------------------------
-
-
-def test_budget_denial_returns_error_and_does_not_delegate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import agents.simulate_budget
-    from agents.simulate_tool import simulate as real_simulate
-
-    delegated: list[str] = []
-
-    def recording_simulate(game: Game, expr: str) -> Any:
-        delegated.append(expr)
-        return real_simulate(game, expr)
-
-    monkeypatch.setattr(agents.simulate_budget, "simulate", recording_simulate)
-
-    denied_expr = "denied-expr"
-    agent = _agent(
-        [
-            _tool_use("sim-1", "0.05*x"),
-            _tool_use("sim-2", "0.1*x"),
-            _tool_use("sim-3", "0.15*x"),
-            _tool_use("sim-4", denied_expr),
-            _text("0.05*x"),
-        ],
-        simulate_budget=3,  # the M5.3-style cap; the live default is unlimited
-    )
-    game, obs = _game_and_obs()
-    assert agent.act(game, obs) == "0.05*x"
-    stats = agent.stats()
-    assert stats.simulate_calls == 3  # the explicit simulate_budget cap
-    # 2 denials: the model's 4th probe AND the commit guardrail's check (the
-    # budget was already spent — the commit fires as-is, M5.4 degradation).
-    assert stats.simulate_denied == 2
-    # The denied calls never reached the pure oracle.
-    assert delegated == ["0.05*x", "0.1*x", "0.15*x"]
-
-    fifth_call_messages = agent._client.messages.calls[4]["messages"]
-    tool_result = fifth_call_messages[-1]["content"][0]
-    assert tool_result["tool_use_id"] == "sim-4"
-    assert tool_result["is_error"] is True
-    assert tool_result["content"] == _BUDGET_EXHAUSTED_TEXT
-
-
-# --- 6. constructor fails fast without auth env vars ---------------------------
+# --- 4. constructor fails fast without auth env vars ---------------------------
 
 
 def test_streaming_client_is_preferred_when_available() -> None:
@@ -444,7 +269,7 @@ def test_streaming_client_is_preferred_when_available() -> None:
     assert kwargs is not None
     assert kwargs["max_tokens"] == 128000  # the model's full context budget
     assert kwargs["system"] == _SYSTEM_PROMPT
-    assert kwargs["tools"][0]["name"] == "simulate"
+    assert "tools" not in kwargs  # single-shot: no tools offered
 
 
 def test_reasoning_effort_auto_with_gateway_env(
@@ -506,7 +331,11 @@ def test_system_prompt_contains_exact_whitelist() -> None:
     assert 'no "y ="' in _SYSTEM_PROMPT  # the bare-expression output contract
 
 
-# --- 8. miss telemetry (the model's gradient) ---------------------------------
+# --- 6. the pure oracle (used by persona verifiers, not by the agent) --------
+
+# The agent itself makes zero oracle calls; the persona machine verifiers
+# still verify through the pure agents.simulate_tool.simulate. These pin
+# that oracle's contract.
 
 
 def test_unparseable_simulate_has_null_telemetry() -> None:
@@ -533,149 +362,34 @@ def test_telemetry_reports_termination_reason() -> None:
     assert result.stopped_at_x is not None
 
 
-# --- 9. commit guardrail (M5.4 Fix 1) ------------------------------------------
+# --- 7. first output fires verbatim — even a teammate hit (no guardrail) ----
 #
-# The harness oracle-checks the committed expression through the SAME
-# BudgetedSimulator and fires the turn's best probed expression instead when
-# the commit is STRICTLY worse by _probe_score (ties go to the commit).
-# Board facts used below (deterministic seed 21, num_soldiers=2):
-# "0*x" dies on the muzzle rock: terrain, nearest_miss 34.725;
-# "1(x+18.117)" dies on the same rock, slightly closer: 34.698;
-# "-1.4117(x+18.117)" is a line through the muzzle that strikes the ALLY
-# (hit_teammate, the critical-failure rank).
+# Single-shot means what it says: the model polices itself with the CLEAR
+# LANES. Board fact (deterministic seed 21, num_soldiers=2):
+# "-1.4117(x+18.117)" is a line through the muzzle that strikes the ALLY.
 
 
-def test_probe_score_ordering() -> None:
-    """Lower = better: a teammate hit is NEVER preferred over a clean no-hit
-    (whatever its nearest_miss), reach ranks over distance, and unparseable
-    probes (all-None telemetry) rank worst."""
-    from agents.llm_agent import _probe_score
-    from agents.simulate_tool import SimResult
-
-    def res(**kwargs: Any) -> SimResult:
-        base: dict[str, Any] = {
-            "parseable": True,
-            "hit_enemy": False,
-            "hit_teammate": False,
-            "num_hits": 0,
-            "num_steps": 10,
-        }
-        base.update(kwargs)
-        return SimResult(**base)
-
-    clean_hit = res(hit_enemy=True, num_hits=1, nearest_miss=0.1, stop_reason="hit")
-    teammate_hit = res(hit_teammate=True, num_hits=1, nearest_miss=0.05, stop_reason="hit")
-    no_hit_far = res(nearest_miss=100.0, stop_reason="short")
-    no_hit_passed = res(nearest_miss=2.0, stop_reason="passed")
-    no_hit_short = res(nearest_miss=2.0, stop_reason="short")
-    unparseable = res(parseable=False, num_steps=0)
-
-    assert _probe_score(teammate_hit) > _probe_score(no_hit_far)
-    assert _probe_score(no_hit_passed) < _probe_score(no_hit_short)
-    assert _probe_score(clean_hit) < _probe_score(no_hit_far)
-    assert _probe_score(unparseable) == (1, 1, float("inf"))
-    assert _probe_score(no_hit_far) < _probe_score(unparseable)
-
-
-def test_guardrail_fires_a_strictly_better_probe_over_a_dead_commit() -> None:
-    """Probes ran (dead on the muzzle rock), the commit strikes a TEAMMATE —
-    the guardrail fires the probe instead and counts one override."""
-    agent = _agent([_tool_use("sim-1", "0*x"), _text("-1.4117(x+18.117)")])
+def test_first_output_fires_verbatim_without_oracle() -> None:
+    """No probes, no guardrail, no override: the first output fires as-is
+    and the runner records the outcome (a teammate hit here — the model's
+    problem, not the harness's)."""
+    agent = _agent([_text("-1.4117(x+18.117)")])
     game, obs = _seed21_game_and_obs()
-    assert agent.act(game, obs) == "0*x"
-    stats = agent.stats()
-    assert stats.guardrail_overrides == 1
-    assert stats.simulate_calls == 2  # probe + commit check
-    assert stats.simulate_denied == 0
-
-
-def test_guardrail_keeps_a_commit_at_least_as_good_as_the_best_probe() -> None:
-    """Ties and close calls go to the commit: the model's own word wins when
-    its candidate is not strictly worse than the best probe."""
-    agent = _agent([_tool_use("sim-1", "0*x"), _text("1(x+18.117)")])
-    game, obs = _seed21_game_and_obs()
-    assert agent.act(game, obs) == "1(x+18.117)"  # 34.698 beats the probe's 34.725
+    assert agent.act(game, obs) == "-1.4117(x+18.117)"
     stats = agent.stats()
     assert stats.guardrail_overrides == 0
-    assert stats.simulate_calls == 2
+    assert stats.simulate_calls == 0
+    assert len(agent._client.messages.calls) == 1
 
 
-def test_guardrail_commit_check_denied_on_budget_returns_commit() -> None:
-    """The commit check is only deniable on a finite budget: with the turn's
-    budget spent, the check raises and the commit fires as-is (documented
-    degradation), no crash, no override."""
-    agent = _agent([_tool_use("sim-1", "0*x"), _text("1(x+18.117)")], simulate_budget=1)
-    game, obs = _seed21_game_and_obs()
-    assert agent.act(game, obs) == "1(x+18.117)"
-    stats = agent.stats()
-    assert stats.guardrail_overrides == 0
-    assert stats.simulate_calls == 1  # the probe; the check was denied
-    assert stats.simulate_denied == 1  # the denied commit check
-
-
-def test_unrecoverable_failure_falls_back_to_the_best_probe() -> None:
-    """Probes ran, then the gateway killed every regeneration: the turn fires
-    the BEST probed expression (the guardrail's preference), not merely the
-    last one."""
-    agent = LLMAgent(
-        model="fake-model",
-        client=_DyingAfterClient([_tool_use("sim-1", "0*x"), _tool_use("sim-2", "1(x+18.117)")]),
-    )
-    game, obs = _seed21_game_and_obs()
-    assert agent.act(game, obs) == "1(x+18.117)"  # best (34.698), not 0*x (34.725)
-    stats = agent.stats()
-    assert stats.parse_failures == 1
-    assert stats.retries == 1
-    assert agent._client.messages.calls == 5  # 2 rounds + 3 attempts on the death
-
-
-def test_guardrail_override_flows_through_play_match() -> None:
-    """End-to-end: the runner merges the new counter into the match stats
-    (mirrors the simulate_calls merge test in test_eval.py)."""
-    agent = _agent([_tool_use("sim-1", "0*x"), _text("-1.4117(x+18.117)")])
+def test_first_output_flows_through_play_match() -> None:
+    """End-to-end: the single-shot emission fires in a real match."""
+    agent = _agent([_text("0.05*x")])
     result = play_match(21, agent, StraightShotAgent(), MatchConfig(num_soldiers=2, max_turns=2))
-    assert result.stats["llm:fake-model"].guardrail_overrides == 1
+    assert result.stats["llm:fake-model"].guardrail_overrides == 0
 
 
-# --- 10. telemetry echo in the commit nudge (M5.4 Fix 2) -----------------------
-
-
-class _UnknownToolBlock:
-    def __init__(self, id: str) -> None:  # noqa: A002 - mirrors the wire field
-        self.type = "tool_use"
-        self.id = id
-        self.name = "other_tool"
-        self.input = {}
-
-
-def test_commit_warning_echoes_the_last_probe_telemetry() -> None:
-    """When the commit nudge fires, it carries the last probe's identity and
-    telemetry so the model can commit its best probe or fix exactly its
-    failure (the live diagnosis: the commit never re-read old results)."""
-    agent = _agent([_tool_use("sim-1", "0*x"), _text("1(x+18.117)")], tool_rounds=3)
-    game, obs = _seed21_game_and_obs()
-    assert agent.act(game, obs) == "1(x+18.117)"
-    warning = agent._client.messages.calls[1]["messages"][-1]["content"][-1]["text"]
-    assert warning.startswith("That was your last probe of the turn")
-    assert "Your last probe '0*x'" in warning
-    assert "nearest_miss=34.725" in warning
-    assert "miss_direction=low" in warning
-    assert "stop_reason=terrain" in warning
-    assert "commit THAT expression" in warning
-
-
-def test_commit_warning_has_no_echo_without_a_probe() -> None:
-    """No oracle-reaching probe this turn -> the plain nudge only (the echo
-    cannot invent telemetry)."""
-    agent = _agent([_Response("tool_use", [_UnknownToolBlock("u-1")]), _text("0*x")], tool_rounds=2)
-    game, obs = _game_and_obs()
-    assert agent.act(game, obs) == "0*x"
-    warning = agent._client.messages.calls[1]["messages"][-1]["content"][-1]["text"]
-    assert "commit your best expression NOW" in warning
-    assert "Your last probe" not in warning
-
-
-# --- 11. muzzle-wall warning in the turn message (M5.4 Fix 3b) -----------------
+# --- 8. muzzle-wall warning in the turn message (M5.4 Fix 3b) -----------------
 
 
 def _obs_with_terrain(blocks: tuple[tuple[float, float], ...]) -> Any:
@@ -698,9 +412,11 @@ def test_turn_message_warns_about_a_muzzle_wall() -> None:
     deterministic descending-launch warning — the seed-21 live failure (every
     early probe ascended into the muzzle rock)."""
     from agents.llm_agent import _turn_message
+    from graphwar_sim import Game as _Game
 
+    game = _Game.create(5, num_soldiers=1)
     obs = _obs_with_terrain(((-17.2, 7.8), (5.0, -5.0)))
-    message = _turn_message(obs, "unlimited")
+    message = _turn_message(game, obs)
     assert "terrain wall at (x~-17.2, y~7.8) just right of your muzzle" in message
     assert "launch DESCENDING" in message
 
@@ -708,13 +424,15 @@ def test_turn_message_warns_about_a_muzzle_wall() -> None:
 def test_turn_message_no_warning_for_far_or_left_terrain() -> None:
     """Terrain left of the muzzle, or beyond the scan radii, warns nothing."""
     from agents.llm_agent import _turn_message
+    from graphwar_sim import Game as _Game
 
+    game = _Game.create(5, num_soldiers=1)
     for blocks in (
         ((-20.0, 7.5), (5.0, -5.0)),  # left of the muzzle
         ((-14.0, 7.5), (5.0, -5.0)),  # >2.5 right
         ((-17.5, 12.0), (5.0, -5.0)),  # >2 above
     ):
-        message = _turn_message(_obs_with_terrain(blocks), "unlimited")
+        message = _turn_message(game, _obs_with_terrain(blocks))
         assert "terrain wall" not in message, blocks
 
 
@@ -723,45 +441,46 @@ def test_seed21_turn_message_carries_the_muzzle_warning() -> None:
     construction with the real observation)."""
     from agents.llm_agent import _turn_message
 
-    _, obs = _seed21_game_and_obs()
-    message = _turn_message(obs, "unlimited")
+    game, obs = _seed21_game_and_obs()
+    message = _turn_message(game, obs)
     assert "just right of your muzzle" in message
 
 
-# --- 13. live activity feed (Slice B) -------------------------------------------
+def test_clear_lanes_agree_with_the_live_grid() -> None:
+    """Spot-check the deterministic hint: at the muzzle's own x the lane
+    holds the muzzle, and a fully walled sample reads BLOCKED."""
+    from agents.llm_agent import _clear_lane_lines
+
+    game, obs = _game_and_obs()
+    lines = _clear_lane_lines(game, obs)
+    assert lines, "expected lane samples toward the enemy"
+    first = lines[0]
+    assert first.startswith(f"x={obs.shooter[0]:.1f}: ")
+    assert "BLOCKED" not in first  # the muzzle column holds the muzzle
+    assert all(
+        line.startswith("x=") and (", " in line or ".." in line or "BLOCKED" in line)
+        for line in lines
+    )
+
+
+# --- 10. live activity feed (Slice B) -------------------------------------------
 #
-# Events: ("round"|"text"|"tool_call"|"tool_result"|"guardrail"|"persona"|
-# "commit"|"delta", payload) — the UI server routes them into its ring.
+# Events: ("round"|"text"|"persona"|"commit"|"delta", payload) — the UI
+# server routes them into its ring.
 
 
 def test_event_sequence_for_a_scripted_turn() -> None:
     events: list[tuple[str, dict[str, Any]]] = []
     agent = _agent(
-        [_tool_use("sim-1", "0.05*x"), _text("0.05*x")],
-        tool_rounds=3,
+        [_text("0.05*x")],
         on_event=lambda kind, payload: events.append((kind, dict(payload))),
     )
     game, obs = _game_and_obs()
     assert agent.act(game, obs) == "0.05*x"
-    assert [kind for kind, _ in events] == [
-        "round",
-        "tool_call",
-        "tool_result",
-        "round",
-        "text",
-        "guardrail",
-        "commit",
-    ]
-    assert events[0] == ("round", {"n": 1, "force_commit": False})
-    assert events[1] == ("tool_call", {"expr": "0.05*x"})
-    tool_result = events[2][1]
-    assert tool_result["denied"] is False
-    assert tool_result["stop_reason"] in {"hit", "terrain", "off_map", "short", "passed"}
-    assert events[3] == ("round", {"n": 2, "force_commit": True})
-    assert events[4] == ("text", {"text": "0.05*x"})
-    # The commit IS the best probe: ties go to the commit (guardrail stands).
-    assert events[5] == ("guardrail", {"fired": False, "expr": "0.05*x"})
-    assert events[6] == ("commit", {"expr": "0.05*x"})
+    assert [kind for kind, _ in events] == ["round", "text", "commit"]
+    assert events[0] == ("round", {"n": 1})
+    assert events[1] == ("text", {"text": "0.05*x"})
+    assert events[2] == ("commit", {"expr": "0.05*x"})
 
 
 def test_persona_event_carries_the_verdict() -> None:
@@ -771,45 +490,13 @@ def test_persona_event_carries_the_verdict() -> None:
         persona="sniper",
         on_event=lambda kind, payload: events.append((kind, dict(payload))),
     )
-    game, obs = _game_and_obs()  # a bottom-rung line passes without oracle use
+    game, obs = _game_and_obs()
     assert agent.act(game, obs) == "0.05*x"
     assert [kind for kind, _ in events] == ["round", "text", "persona", "commit"]
     assert events[2] == (
         "persona",
         {"verdict": "PASS", "reason": "", "constraint": "simplest_rung"},
     )
-
-
-def test_guardrail_event_reports_the_fired_probe() -> None:
-    events: list[tuple[str, dict[str, Any]]] = []
-    agent = _agent(
-        [_tool_use("sim-1", "0*x"), _text("-1.4117(x+18.117)")],
-        on_event=lambda kind, payload: events.append((kind, dict(payload))),
-    )
-    game, obs = _seed21_game_and_obs()
-    assert agent.act(game, obs) == "0*x"
-    guardrail = [payload for kind, payload in events if kind == "guardrail"]
-    assert guardrail == [{"fired": True, "expr": "0*x"}]
-    commit = [payload for kind, payload in events if kind == "commit"]
-    assert commit == [{"expr": "0*x"}]
-
-
-def test_tool_result_denied_event_on_budget_exhaustion() -> None:
-    events: list[tuple[str, dict[str, Any]]] = []
-    agent = _agent(
-        [
-            _tool_use("sim-1", "0.05*x"),
-            _tool_use("sim-2", "denied-expr"),
-            _text("0.05*x"),
-        ],
-        simulate_budget=1,
-        on_event=lambda kind, payload: events.append((kind, dict(payload))),
-    )
-    game, obs = _game_and_obs()
-    assert agent.act(game, obs) == "0.05*x"
-    results = [payload for kind, payload in events if kind == "tool_result"]
-    assert results[0]["denied"] is False
-    assert results[1] == {"denied": True, "expr": "denied-expr"}
 
 
 def test_broken_sink_never_crashes_the_turn() -> None:
@@ -995,48 +682,6 @@ def test_turn_cancelled_is_a_base_exception() -> None:
     assert not issubclass(TurnCancelled, Exception)
 
 
-def test_cancel_between_rounds_raises_and_leaves_the_board_untouched() -> None:
-    """The fake client serves one probe round, then the flag flips: the
-    between-rounds check raises TurnCancelled, no shot is fired, and the
-    stats reflect the probes without corruption."""
-    from agents.llm_agent import TurnCancelled
-
-    flag = {"set": False}
-
-    class _FlagFlippingMessages:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def create(self, **kwargs: Any) -> _Response:
-            self.calls += 1
-            if self.calls == 1:
-                flag["set"] = True  # the cancel arrives mid-turn
-                return _tool_use("sim-1", "0.05*x")
-            return _text("0.05*x")
-
-    class _FlagFlippingClient:
-        def __init__(self) -> None:
-            self.messages = _FlagFlippingMessages()
-
-    agent = LLMAgent(
-        model="fake-model", client=_FlagFlippingClient(), cancel_requested=lambda: flag["set"]
-    )
-    game, obs = _game_and_obs()
-    with pytest.raises(TurnCancelled):
-        agent.act(game, obs)
-    # Board untouched: no shot fired, no soldier died, no turn advanced.
-    fresh = Game.create(5, num_soldiers=1)
-    assert game.state.current_turn == fresh.state.current_turn
-    assert [s.alive for s in game.all_soldiers()] == [s.alive for s in fresh.all_soldiers()]
-    # Stats not corrupted: the probe is accounted, no parse-failure noise.
-    stats = agent.stats()
-    assert stats.simulate_calls == 1
-    assert stats.parse_failures == 0
-    assert stats.retries == 0
-    assert stats.guardrail_overrides == 0
-    assert agent._client.messages.calls == 1  # the second round never started
-
-
 def test_cancel_set_before_the_turn_raises_immediately() -> None:
     from agents.llm_agent import TurnCancelled
 
@@ -1044,6 +689,10 @@ def test_cancel_set_before_the_turn_raises_immediately() -> None:
     game, obs = _game_and_obs()
     with pytest.raises(TurnCancelled):
         agent.act(game, obs)
+    # Board untouched: no shot fired, no soldier died, no turn advanced.
+    fresh = Game.create(5, num_soldiers=1)
+    assert game.state.current_turn == fresh.state.current_turn
+    assert [s.alive for s in game.all_soldiers()] == [s.alive for s in fresh.all_soldiers()]
     assert agent.stats().simulate_calls == 0
     assert agent._client.messages.calls == []  # no API round-trip at all
 

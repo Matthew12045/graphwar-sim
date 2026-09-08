@@ -96,6 +96,14 @@ therefore unions the blocked row ranges over ALL discrete columns
 ``[floor(px_lo), floor(px_hi)]`` of each cell (exact; the rows nest, so the
 union is the row range at the integer column closest to the centre).
 
+Destructible terrain: terrain = circles MINUS carve disks. Every shot ends in
+a blast that clears an ``EXPLOSION_RADIUS`` crater (``Game.fire``,
+GameData.java:1020-1032); ``carves`` are plane-px ``(x, y, r)`` in TRUE plane
+coords (x already mirrored at fire time, exactly like ``circles``), so they
+mirror identically into the shooter frame. A carve only REMOVES rock, so
+free_new = free_old ∪ carve-disks and any envelope computed from (circles,
+carves) by interval subtraction stays exact/sound w.r.t. the crisp pixel grid.
+
 Exclusion disks are NOT discretized: soldier hit-tests are CONTINUOUS plane
 ``dist² < r²`` tests (GROUND_TRUTH.md §2.6 — no ``int`` rounding), so their
 M5.1 and M5.2 bands stay continuous. Do not "fix" them to discrete columns —
@@ -273,10 +281,50 @@ def _dilate_and_intersect(
 # --- M5.1 pointwise free sets ------------------------------------------------
 
 
+def _merge_int(ints: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merge overlapping/touching integer intervals (row space)."""
+    if not ints:
+        return []
+    out: list[tuple[int, int]] = []
+    for lo, hi in sorted(ints):
+        if out and lo <= out[-1][1] + 1:
+            out[-1] = (out[-1][0], max(out[-1][1], hi))
+        else:
+            out.append((lo, hi))
+    return out
+
+
+def _subtract_int(
+    base: Sequence[tuple[int, int]],
+    cuts: Sequence[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """Integer interval difference: ``base`` minus the union of ``cuts``."""
+    if not base or not cuts:
+        return list(base)
+    merged = _merge_int(cuts)
+    out: list[tuple[int, int]] = []
+    for lo, hi in base:
+        cur = lo
+        for clo, chi in merged:
+            if chi < cur:
+                continue
+            if clo > hi:
+                break
+            if clo > cur:
+                out.append((cur, min(clo - 1, hi)))
+            cur = max(cur, chi + 1)
+            if cur > hi:
+                break
+        if cur <= hi:
+            out.append((cur, hi))
+    return out
+
+
 def _column_free(
     wx: float,
     circles: Sequence[tuple[int, int, int]],
     exclusions: Sequence[_Exclusion],
+    carves: Sequence[tuple[int, int, int]] = (),
 ) -> list[tuple[float, float]]:
     """The free set F_k at world column ``wx`` (see module docstring).
 
@@ -299,6 +347,13 @@ def _column_free(
     (``px < cx``) it is FARTHER, so the continuous computation was already
     conservative there. Evaluating at ``pc`` makes the corridor EXACT w.r.t.
     the physics' rounding on both flanks.
+
+    ``carves`` are plane-px ``(ex, ey, er)`` crater disks in the same TRUE
+    plane coords as ``circles`` (already mirrored into this frame by the
+    caller). Blocked-after-carve = circle rows minus carve cleared rows
+    (integer interval difference, ≤2 pieces per circle-carve pair), exact per
+    column. A carve only removes rock, so the result stays exact w.r.t. the
+    carved grid.
     """
     px = plane_x_of(wx)
     if not (0 <= px < config.PLANE_LENGTH):
@@ -318,6 +373,26 @@ def _column_free(
         py_hi = math.floor(cy + s)
         if py_hi < py_lo:
             continue  # no integer row center inside the circle at this column
+        if carves:
+            cleared: list[tuple[int, int]] = []
+            for vx, vy, vr in carves:
+                dxc = pc - vx
+                if abs(dxc) > vr:
+                    continue
+                sr = math.sqrt(vr * vr - dxc * dxc)
+                c_lo = math.ceil(vy - sr)
+                c_hi = math.floor(vy + sr)
+                lo = max(py_lo, c_lo)
+                hi = min(py_hi, c_hi)
+                if hi >= lo:
+                    cleared.append((lo, hi))
+            if cleared:
+                for plo, phi in _subtract_int([(py_lo, py_hi)], cleared):
+                    blo, bhi = world_y_range_for_plane_rows(plo, phi + 1)
+                    if bhi < y_min or blo > y_max:
+                        continue
+                    blocks.append((max(blo, y_min), min(bhi, y_max)))
+                continue
         blo, bhi = world_y_range_for_plane_rows(py_lo, py_hi + 1)
         if bhi < y_min or blo > y_max:
             continue
@@ -426,6 +501,65 @@ def _combine_sides(a: str | None, b: str | None) -> str | None:
     return a if a == b else "both"
 
 
+def _cell_carve_overlaps(u_lo: float, u_hi: float, carves: Sequence[tuple[int, int, int]]) -> bool:
+    """True when any carve's x-range touches the cell's discrete columns."""
+    if not carves:
+        return False
+    px_lo, px_hi = plane_x_of(u_lo), plane_x_of(u_hi)
+    lo, hi = min(px_lo, px_hi), max(px_lo, px_hi)
+    c_lo, c_hi = math.floor(lo), math.floor(hi)
+    return any(not (c_hi < ex - er or c_lo > ex + er) for ex, _ey, er in carves)
+
+
+def _cell_circle_bands_carved(
+    u_lo: float,
+    u_hi: float,
+    cx: int,
+    cy: int,
+    r: int,
+    carves: Sequence[tuple[int, int, int]],
+) -> list[tuple[float, float]]:
+    """World blocked bands of one circle over a carve-overlapping cell.
+
+    Enumeration over exactly the discrete columns the physics can test
+    (``pc in [floor(px_lo), floor(px_hi)]``): per column, circle rows minus
+    each overlapping carve's cleared rows → pieces (≤2 per column); each
+    piece becomes a world band via ``world_y_range_for_plane_rows``. A cell
+    spans ``du = 0.01`` world ≈ 0.154 px, so production cells touch at most 2
+    columns; coarse-du test cells enumerate more, still cheap and exact.
+    """
+    px_lo, px_hi = plane_x_of(u_lo), plane_x_of(u_hi)
+    lo, hi = min(px_lo, px_hi), max(px_lo, px_hi)
+    c_lo, c_hi = math.floor(lo), math.floor(hi)
+    p_lo, p_hi = max(c_lo, cx - r), min(c_hi, cx + r)
+    if p_hi < p_lo:
+        return []
+    out: list[tuple[float, float]] = []
+    for pc in range(p_lo, p_hi + 1):
+        dx = pc - cx
+        s = math.sqrt(max(0.0, r * r - dx * dx))
+        py_lo = math.ceil(cy - s)
+        py_hi = math.floor(cy + s)
+        if py_hi < py_lo:
+            continue
+        cleared: list[tuple[int, int]] = []
+        for ex, ey, er in carves:
+            dxc = pc - ex
+            if abs(dxc) > er:
+                continue
+            sr = math.sqrt(max(0.0, er * er - dxc * dxc))
+            c_lo_r = math.ceil(ey - sr)
+            c_hi_r = math.floor(ey + sr)
+            ilo = max(py_lo, c_lo_r)
+            ihi = min(py_hi, c_hi_r)
+            if ihi >= ilo:
+                cleared.append((ilo, ihi))
+        pieces = _subtract_int([(py_lo, py_hi)], cleared) if cleared else [(py_lo, py_hi)]
+        for plo, phi in pieces:
+            out.append(world_y_range_for_plane_rows(plo, phi + 1))
+    return out
+
+
 def cell_conservative_bounds(
     u_lo: float,
     u_hi: float,
@@ -435,6 +569,7 @@ def cell_conservative_bounds(
     branch_hi_hi: float,
     circles: Sequence[tuple[int, int, int]],
     exclusions: Sequence[_Exclusion],
+    carves: Sequence[tuple[int, int, int]] = (),
 ) -> tuple[float, float] | None:
     """Conservative free envelope ``[Lcell, Hcell]`` of one corridor cell
     (5.2.md §5): the chord between the branch's endpoints must stay inside the
@@ -447,19 +582,36 @@ def cell_conservative_bounds(
     at both -> ceiling (lowers ``Hcell``), undetermined/swapping -> the
     envelope may not contain the band at all (returns None). Returns None when
     no chord can thread the cell.
+
+    ``carves`` are plane-px crater disks (same convention as ``circles``).
+    When no carve intersects the cell the closed-form ``_cell_obstacle_band``
+    fast path runs unchanged (zero regression risk); otherwise each circle's
+    blocked pieces are enumerated per discrete column after carve subtraction
+    and folded with the same side machinery (sound: the enumeration covers
+    exactly the columns the physics tests; treating each piece as spanning
+    the cell is conservative).
     """
     y_min, y_max = map_y_bounds()
     bands: list[tuple[float, float, str | None]] = []  # (lo, hi, side)
 
-    for cx, cy, r in circles:
-        band = _cell_obstacle_band(u_lo, u_hi, cx, cy, r)
-        if band is None:
-            continue
-        side = _combine_sides(
-            _side_at(band, branch_lo_lo, branch_lo_hi),
-            _side_at(band, branch_hi_lo, branch_hi_hi),
-        )
-        bands.append((band[0], band[1], side))
+    if carves and _cell_carve_overlaps(u_lo, u_hi, carves):
+        for cx, cy, r in circles:
+            for band_lo, band_hi in _cell_circle_bands_carved(u_lo, u_hi, cx, cy, r, carves):
+                side = _combine_sides(
+                    _side_at((band_lo, band_hi), branch_lo_lo, branch_lo_hi),
+                    _side_at((band_lo, band_hi), branch_hi_lo, branch_hi_hi),
+                )
+                bands.append((band_lo, band_hi, side))
+    else:
+        for cx, cy, r in circles:
+            band = _cell_obstacle_band(u_lo, u_hi, cx, cy, r)
+            if band is None:
+                continue
+            side = _combine_sides(
+                _side_at(band, branch_lo_lo, branch_lo_hi),
+                _side_at(band, branch_hi_lo, branch_hi_hi),
+            )
+            bands.append((band[0], band[1], side))
     for ex, ey, er in exclusions:
         if u_hi < ex - er or u_lo > ex + er:
             continue
@@ -489,6 +641,7 @@ def chain_cells(
     circles: Sequence[tuple[int, int, int]],
     exclusions: Sequence[_Exclusion],
     du: float = _DU,
+    carves: Sequence[tuple[int, int, int]] = (),
 ) -> tuple[tuple[float, ...], tuple[float, ...]] | None:
     """Per-CELL conservative envelopes ``([Lcell...], [Hcell...])`` of an M5.1
     chain (5.2.md §5), exact obstacle extrema per cell. Cell ``k`` spans
@@ -512,6 +665,7 @@ def chain_cells(
             H[k + 1],
             circles,
             exclusions,
+            carves,
         )
         if env is None:
             return None
@@ -525,13 +679,14 @@ def chain_cell_bounds(
     circles: Sequence[tuple[int, int, int]],
     exclusions: Sequence[_Exclusion],
     du: float = _DU,
+    carves: Sequence[tuple[int, int, int]] = (),
 ) -> tuple[tuple[float, ...], tuple[float, ...]] | None:
     """Per-sample cell-wise corridor bounds from an M5.1 chain (5.2.md §5):
     ``L_k = max(Lcell_{k-1}, Lcell_k)``, ``H_k = min(Hcell_{k-1}, Hcell_k)``
     (endpoints use their single adjacent cell). None if any cell envelope is
     empty (the chain does not survive the cell-wise sharpening).
     """
-    cells = chain_cells(chain, mx, circles, exclusions, du)
+    cells = chain_cells(chain, mx, circles, exclusions, du, carves)
     if cells is None:
         return None
     Lcells, Hcells = cells
@@ -558,7 +713,8 @@ class ShooterFrame:
     ``targets`` are alive enemies (all with ``x > mx`` in this frame);
     ``teammates`` are alive same-side soldiers excluding the shooter;
     ``circles`` are terrain circles in plane pixel coords (the mirror, if any,
-    is applied inside the sweep).
+    is applied inside the sweep); ``carves`` are crater disks in the same TRUE
+    plane coords (mirrored identically).
     """
 
     mx: float
@@ -567,6 +723,7 @@ class ShooterFrame:
     teammates: tuple[tuple[float, float], ...]
     circles: tuple[tuple[int, int, int], ...]
     inverted: bool
+    carves: tuple[tuple[int, int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -608,11 +765,13 @@ def sweep_target(
     du: float = _DU,
     max_branches: int = _MAX_BRANCHES,
     teammate_radius: float = _TEAMMATE_RADIUS,
+    carves: Sequence[tuple[int, int, int]] = (),
 ) -> TargetReachability:
     """Corridor sweep for one target. See :func:`sweep_targets`.
 
     ``teammate_radius`` (world units) sizes the teammate exclusion disks
-    (M5.1: Phase 0 SOLDIER_RADIUS; CCF: blast-radius-inflated).
+    (M5.1: Phase 0 SOLDIER_RADIUS; CCF: blast-radius-inflated). ``carves``
+    are crater disks in TRUE plane coords (mirrored like ``circles``).
     """
     tx, ty = targets[target_index]
     radius = WORLD_RADIUS
@@ -624,11 +783,13 @@ def sweep_target(
 
     exclusions = build_exclusions(target_index, targets, teammates, teammate_radius)
     # Terrain is mirrored for a TEAM2 shooter (physics.py:247-250); mirroring
-    # the circle centres once is equivalent.
+    # the circle centres once is equivalent. Carves are TRUE plane coords, so
+    # they mirror exactly like circles.
     circ = [(config.PLANE_LENGTH - cx, cy, r) for cx, cy, r in circles] if inverted else circles
+    carv = [(config.PLANE_LENGTH - cx, cy, r) for cx, cy, r in carves] if inverted else carves
 
     # Muzzle column must hold the muzzle (soldier placement guarantees it).
-    if not any(lo <= my <= hi for lo, hi in _column_free(columns[0], circ, exclusions)):
+    if not any(lo <= my <= hi for lo, hi in _column_free(columns[0], circ, exclusions, carv)):
         return TargetReachability(
             target_index=target_index, tx=tx, ty=ty, reachable=False, first_blocked_column=0
         )
@@ -639,7 +800,7 @@ def sweep_target(
     first_blocked: int | None = None
 
     for k in range(1, k_max + 1):
-        free = _column_free(columns[k], circ, exclusions)
+        free = _column_free(columns[k], circ, exclusions, carv)
         if not free:
             first_blocked = k
             break
@@ -712,6 +873,7 @@ def sweep_targets(
     du: float = _DU,
     max_branches: int = _MAX_BRANCHES,
     teammate_radius: float = _TEAMMATE_RADIUS,
+    carves: Sequence[tuple[int, int, int]] = (),
 ) -> list[TargetReachability]:
     """Run the corridor sweep for every target in the shooter-facing frame.
 
@@ -743,6 +905,7 @@ def sweep_targets(
             du,
             max_branches,
             teammate_radius,
+            carves,
         )
         for j in range(len(targets))
     ]
@@ -786,6 +949,7 @@ def shooter_frame(game: Game) -> ShooterFrame:
         teammates=tuple(teammates),
         circles=tuple(getattr(game, "circles", ())),
         inverted=inverted,
+        carves=tuple(getattr(game, "carves", ())),
     )
 
 
@@ -796,7 +960,9 @@ def reachability(game: Game) -> list[TargetReachability]:
     :func:`sweep_targets`.
     """
     fr = shooter_frame(game)
-    return sweep_targets(fr.mx, fr.my, fr.targets, fr.teammates, fr.circles, fr.inverted)
+    return sweep_targets(
+        fr.mx, fr.my, fr.targets, fr.teammates, fr.circles, fr.inverted, carves=fr.carves
+    )
 
 
 __all__ = [

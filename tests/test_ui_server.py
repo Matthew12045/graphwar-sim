@@ -182,6 +182,19 @@ def test_full_game_to_completion_does_not_crash(client: TestClient) -> None:
         pytest.fail("seed-3 game did not finish within 30 solver turns")
 
 
+def test_board_carries_carves() -> None:
+    """Destructible terrain: fresh board has empty carves; one fire appends one."""
+    from ui.server import _board_json
+
+    game = Game.create(seed=21)
+    board = _board_json(game)
+    assert board["carves"] == []
+    game.fire("x/2")
+    board = _board_json(game)
+    assert len(board["carves"]) == 1
+    assert len(board["carves"][0]) == 3
+
+
 def test_static_frontend_served(client: TestClient) -> None:
     response = client.get("/")
     assert response.status_code == 200
@@ -631,31 +644,23 @@ def test_agent_for_mode_carries_cancel_callback(
 
 
 def test_server_cancel_event_fires_a_scripted_llm_turn() -> None:
-    """G4: the server event mid-act unwinds a scripted LLM turn (TurnCancelled)."""
+    """G4: a set server event unwinds a scripted LLM turn (TurnCancelled)
+    before any API round-trip — single-shot turns check the flag up front."""
     import ui.server as server_module
     from agents import TurnCancelled
     from agents.llm_agent import LLMAgent
     from agents.observation import observe
     from graphwar_sim.state import Game
 
-    flag_set_during_create = {"fired": False}
-
     class _TextBlock:
         def __init__(self, text: str) -> None:
             self.type = "text"
             self.text = text
 
-    class _ToolUseBlock:
-        def __init__(self) -> None:
-            self.type = "tool_use"
-            self.id = "sim-1"
-            self.name = "simulate"
-            self.input = {"expr": "0*x"}
-
     class _ScriptedResponse:
-        def __init__(self, tool: bool) -> None:
-            self.stop_reason = "tool_use" if tool else "end_turn"
-            self.content = [_ToolUseBlock()] if tool else [_TextBlock("0*x")]
+        def __init__(self) -> None:
+            self.stop_reason = "end_turn"
+            self.content = [_TextBlock("0*x")]
 
     class _FlippingMessages:
         def __init__(self) -> None:
@@ -663,10 +668,7 @@ def test_server_cancel_event_fires_a_scripted_llm_turn() -> None:
 
         def create(self, **kwargs: object) -> _ScriptedResponse:
             self.calls += 1
-            # The cancel arrives mid-turn: the next between-rounds check fires.
-            server_module._cancel_requested.set()
-            flag_set_during_create["fired"] = True
-            return _ScriptedResponse(tool=True)
+            return _ScriptedResponse()
 
     class _FlippingClient:
         def __init__(self) -> None:
@@ -679,9 +681,10 @@ def test_server_cancel_event_fires_a_scripted_llm_turn() -> None:
             client=_FlippingClient(),  # type: ignore[arg-type]
             cancel_requested=server_module._cancel_requested.is_set,
         )
+        server_module._cancel_requested.set()  # cancel arrives before the turn
         game = Game.create(21)
         with pytest.raises(TurnCancelled):
             agent.act(game, observe(game))
-        assert flag_set_during_create["fired"] is True
+        assert agent._client.messages.calls == 0  # no API round-trip happened
     finally:
         server_module._cancel_requested.clear()

@@ -45,7 +45,6 @@ from agents import RandomAgent, StraightShotAgent
 from agents.base import Agent, Observation
 from agents.hybrid_agent import _HybridSolve, solve_plan_with_ladder
 from agents.personas import PERSONAS
-from agents.simulate_budget import BudgetedSimulator
 from agents.solver_agent import SolverAgent
 from agents.waypoints import PlanSchemaError, WaypointPlan, parse_plan
 from eval.runner import MatchConfig, play_match
@@ -315,8 +314,6 @@ def _run_hybrid_battery(
         targets = sorted(fr.targets, key=lambda p: p[0])
         target_u_T = {f"enemy_{i}": targets[i][0] - fr.mx for i in range(len(targets))}
         for plan_index, raw in enumerate(plans_raw):
-            sim = BudgetedSimulator(game, budget=None)
-            sim.new_turn()
             base: dict[str, Any] = {
                 "seed": seed,
                 "plan_index": plan_index,
@@ -346,7 +343,6 @@ def _run_hybrid_battery(
                     fr,
                     targets,
                     WaypointPlan(target_id=plan.target_id, branch_hint=plan.branch_hint),
-                    sim,
                 )
                 if bare.outcome is CCFOutcome.UNREACHABLE:
                     # The corridor sweep is empty BEFORE any waypoint: skip the
@@ -356,7 +352,7 @@ def _run_hybrid_battery(
                 records.append(
                     _solve_record(seed, plan_index, plan.style, plan.target_id, "bare", bare)
                 )
-            planned = solve_plan_with_ladder(fr, targets, plan, sim)
+            planned = solve_plan_with_ladder(fr, targets, plan)
             if not compare and planned.outcome is CCFOutcome.UNREACHABLE:
                 records.append({**base, "skipped": True, "reason": "corridor_empty"})
                 continue

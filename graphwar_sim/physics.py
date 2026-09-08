@@ -58,15 +58,48 @@ class Obstacle:
 
     Empirically confirmed (prior session): returns ``True`` for black pixels and
     out-of-bounds, ``False`` for white pixels.
+
+    ``grid`` is the mutable crisp pixel model (``grid[y][x]`` True = rock) used
+    by ``state.make_circle_obstacle``. It is ``None`` for closure-built
+    obstacles (e.g. golden-test harnesses) that have no mutable grid — ``carve``
+    raises on those. Reference: ``Obstacle.explodePoint`` (Obstacle.java:118-121)
+    paints a WHITE oval of ``EXPLOSION_RADIUS``; here the carve clears the
+    crisp grid with the same inclusive-radius convention as
+    ``make_circle_obstacle``.
     """
 
     collide_point: Callable[[int, int], bool]  # (int x, int y) -> bool
+    grid: list[list[bool]] | None = None
 
     def __post_init__(self) -> None:
         # Expose the Java name too, for call sites that mirror the source.
         # (Attribute is dynamically added; newer mypy accepts this without an
         # ignore — retained here for older mypy and clarity.)
         self.collidePoint = self.collide_point
+
+    def carve(self, x: int, y: int, radius: int) -> None:
+        """Clear a crater disk ``dx²+dy² <= radius²`` centred at ``(x, y)``.
+
+        Clamped to the plane bounds (the reference's graphics context clips
+        off-map ovals). Raises ``ValueError`` when ``grid is None``.
+        """
+        if self.grid is None:
+            raise ValueError("cannot carve a grid-less obstacle")
+        height = len(self.grid)
+        if height == 0:
+            return
+        length = len(self.grid[0])
+        r2 = radius * radius
+        y0 = max(0, y - radius)
+        y1 = min(height - 1, y + radius)
+        x0 = max(0, x - radius)
+        x1 = min(length - 1, x + radius)
+        for yy in range(y0, y1 + 1):
+            dy = yy - y
+            for xx in range(x0, x1 + 1):
+                dx = xx - x
+                if dx * dx + dy * dy <= r2:
+                    self.grid[yy][xx] = False
 
 
 @dataclass

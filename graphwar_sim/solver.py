@@ -57,6 +57,22 @@ certified-scipy LPs run lazily, only when reached (the ladder is a generator):
    and on death row behind CCF).
 5. ``dud`` — a deliberate safe dud that hits nothing (never crashes).
 
+Acceptance rule (one-shot max-kill)
+-----------------------------------
+``_verify`` returns the enemy-hit **count** (the engine is multi-kill:
+soldier hits never stop the shot, physics.py:276-290 — only terrain/OOB/NaN
+break integration; the hit test is strict ``< SOLDIER_RADIUS=7``, deduped).
+``solve`` walks the ladder in order, rejects any teammate grazer, returns
+immediately on a perfect shot (``kills == n_targets`` — for ``n_targets == 1``
+this reproduces first-hit behavior exactly), otherwise keeps the first
+candidate with strictly more kills than any earlier one (strict ``>``: ladder
+order is the deterministic tie-break) and fires it after the ladder
+exhausts. Only zero-hit-anywhere falls to the rotated duds. The corridor
+pre-check and dig path are unchanged: a corridor-blocked board cannot
+kill-all until dug open. ``SolverResult.kills`` carries the fired shot's
+enemy kills (``notes`` appends ``kills=k/n``); ``rung`` still records the
+producing rung (no new rung).
+
 Emission note: numeric literals are emitted as plain decimals (``_num``),
 never scientific notation — the parser's ``-``→``+-`` rewrite would corrupt
 ``1e-06`` into ``1e+-06`` (parsed as ``1*e - 6``).
@@ -116,6 +132,10 @@ RUNG_ARC = "arc"
 # (SOLVER_FAILED). The old ``dud`` bucket collapsed these two events.
 RUNG_PASS_UNREACHABLE = "PASS_UNREACHABLE"
 RUNG_SOLVER_FAILED = "SOLVER_FAILED"
+# Destructible terrain: no clean path exists NOW, but a shot can blast rock
+# open for a later turn. A ``sacrificial`` turn digs (carves) rather than
+# passing — it is a real shot (a MISS when it hits nobody), not a pass.
+RUNG_SACRIFICIAL = "sacrificial"
 
 
 @dataclass
@@ -128,6 +148,8 @@ class SolverResult:
     - ``notes``: free-form diagnostics (e.g. self-verification hit summary).
     - ``cert``: the CCF certificate when the CCF rung produced the expression,
       else ``None``.
+    - ``kills``: enemy kills for the fired shot (``len(targets)`` denominator
+      in ``notes``); ``0`` on clean duds, ``None`` only when never set.
     """
 
     expression: str
@@ -135,6 +157,7 @@ class SolverResult:
     bound: float
     notes: str = ""
     cert: CCFCertificate | None = None
+    kills: int | None = None
 
 
 @dataclass
@@ -179,6 +202,7 @@ class _Frame:
     inverted: bool
     circles: tuple[tuple[int, int, int], ...]  # terrain circles in plane px
     teammates: list[tuple[float, float]]  # alive same-side soldiers excl. shooter
+    carves: tuple[tuple[int, int, int], ...] = ()  # crater disks, TRUE plane coords
 
 
 def _build_frame(game: Game) -> _Frame:
@@ -219,6 +243,7 @@ def _build_frame(game: Game) -> _Frame:
         inverted=inverted,
         circles=tuple(getattr(game, "circles", ())),
         teammates=teammates,
+        carves=tuple(getattr(game, "carves", ())),
     )
 
 
@@ -366,8 +391,130 @@ def _arc_candidates(frame: _Frame) -> list[_Candidate]:
                     m_bound=2.0 * abs(A),
                 )
             )
+        cands.extend(_sharp_candidates(mx, my, tx, ty))
     cands.sort(key=lambda c: c.m_bound)
     return cands
+
+
+def _sharp_candidates(mx: float, my: float, tx: float, ty: float) -> list[_Candidate]:
+    """Sharp-turn single-target curves through muzzle and enemy (RUNG_ARC).
+
+    Quadratics alone cannot turn sharply: their curvature is constant. These
+    closed-form families supply what the arc sweep lacks, all through the
+    auto-offset constraint ``f(tx) - f(mx) = ty - my`` so every candidate
+    passes through the muzzle and the enemy by construction (the oracle still
+    verifies clearance):
+
+    - ``abs`` kink ``a*|x-c|``: a V corner at ``c`` (piecewise linear,
+      ``m_bound = 0``) — a sharp turn with no singularity.
+    - ``sqrt`` launch ``a*sqrt(x-c)`` with ``c`` behind the muzzle: near-
+      vertical tangent at ``c`` that flattens downrange.
+    - reciprocal ``a/(x-c)`` with the pole outside ``[mx, tx]``: a steep
+      terminal dive (pole beyond the target) or steep launch (pole behind
+      the muzzle).
+    - ``tan`` bend ``a*tan((x-mx)/w)`` with the first pole past the target:
+      a smooth but sharply steepening climb.
+
+    Degenerate placements (zero denominator, non-finite weight, pole inside
+    the span for the smooth families) are skipped. All bounds are finite.
+    """
+    out: list[_Candidate] = []
+    span = tx - mx
+    dy = ty - my
+    if abs(span) < 1e-9:
+        return out
+
+    def _finite(a: float) -> bool:
+        return math.isfinite(a) and abs(a) < 1e9
+
+    # --- abs kink at fractions of the span ---------------------------------
+    for frac in (0.25, 0.5, 0.75):
+        c = mx + frac * span
+        denom = abs(tx - c) - abs(mx - c)
+        if abs(denom) < 1e-9:
+            continue
+        a = dy / denom
+        if not _finite(a):
+            continue
+        out.append(
+            _Candidate(
+                expression=f"({_num(a)})*abs(x-({_num(c)}))",
+                rung=RUNG_ARC,
+                m_bound=0.0,
+            )
+        )
+
+    # --- sqrt launch: pole behind the muzzle --------------------------------
+    for d in (0.5, 2.0, 5.0):
+        c = mx - d
+        denom = math.sqrt(tx - c) - math.sqrt(mx - c)
+        if abs(denom) < 1e-9:
+            continue
+        a = dy / denom
+        if not _finite(a):
+            continue
+        # |f''| = |a| / (4 (x-c)^{3/2}), max at the muzzle (nearest the pole).
+        m = abs(a) / (4.0 * (mx - c) ** 1.5)
+        if not math.isfinite(m):
+            continue
+        out.append(
+            _Candidate(
+                expression=f"({_num(a)})*sqrt(x-({_num(c)}))",
+                rung=RUNG_ARC,
+                m_bound=m,
+            )
+        )
+
+    # --- reciprocal: pole outside the span -----------------------------------
+    for c in (tx + 1.0, tx + 3.0, tx + 8.0, mx - 1.0, mx - 3.0, mx - 8.0):
+        if min(mx, tx) < c < max(mx, tx):
+            continue  # mid-span pole: the shot dies at the asymptote
+        denom = 1.0 / (tx - c) - 1.0 / (mx - c)
+        if abs(denom) < 1e-12:
+            continue
+        a = dy / denom
+        if not _finite(a):
+            continue
+        nearest = min(abs(mx - c), abs(tx - c))
+        m = 2.0 * abs(a) / (nearest**3)
+        if not math.isfinite(m) or m > 1e9:
+            continue
+        out.append(
+            _Candidate(
+                expression=f"({_num(a)})/(x-({_num(c)}))",
+                rung=RUNG_ARC,
+                m_bound=m,
+            )
+        )
+
+    # --- tan bend: first pole past the target ---------------------------------
+    for k in (0.75, 1.5, 3.0):
+        w = span * k
+        if abs(w) < 1e-9:
+            continue
+        # Phase 0 at the muzzle; first pole at mx + w*pi/2, past tx for k > 2/pi.
+        if abs(w) * math.pi / 2.0 <= abs(span):
+            continue
+        t_tx = math.tan((tx - mx) / w)
+        denom = t_tx - math.tan(0.0)
+        if abs(denom) < 1e-12:
+            continue
+        a = dy / denom
+        if not _finite(a):
+            continue
+        # |f''| = 2|a|/w^2 * sec^2(u)|tan(u)|, bounded by the endpoint max.
+        t_max = max(abs(t_tx), 0.0)
+        m = 2.0 * abs(a) * (1.0 + t_max * t_max) * t_max / (w * w)
+        if not math.isfinite(m):
+            continue
+        out.append(
+            _Candidate(
+                expression=f"({_num(a)})*tan((x-({_num(mx)}))/({_num(w)}))",
+                rung=RUNG_ARC,
+                m_bound=m,
+            )
+        )
+    return out
 
 
 def _arc_grid() -> list[float]:
@@ -384,7 +531,13 @@ def _ccf_candidates(frame: _Frame) -> list[_Candidate]:
     from . import ccf  # local import: scipy is heavy and CCF fires mid-ladder only
 
     result = ccf.solve_for_frame(
-        frame.mx, frame.my, frame.targets, frame.teammates, frame.circles, frame.inverted
+        frame.mx,
+        frame.my,
+        frame.targets,
+        frame.teammates,
+        frame.circles,
+        frame.inverted,
+        carves=frame.carves,
     )
     certs = {c.target_index: c for c in result.certificates}
     return [
@@ -398,15 +551,180 @@ def _ccf_candidates(frame: _Frame) -> list[_Candidate]:
     ]
 
 
-def _dud_candidates() -> list[_Candidate]:
-    """Safe fall-back expressions: a flat line at muzzle height (M5.1: emitted
-    only as a PASS_UNREACHABLE / SOLVER_FAILED placeholder, never as a rung).
+def _predict_carve(result: ShotResult, inverted: bool) -> tuple[int, int, int]:
+    """The blast center :meth:`Game.fire` will carve for this shot.
+
+    Replicates ``state.Game.fire`` exactly (GameData.java:1023-1026: the TEAM2
+    mirror applies to the ``(int)``-narrowed x): ``PLANE_LENGTH - int(last_x)``
+    when inverted, else ``int(last_x)``.
+    """
+    from .physics import _java_int_cast
+
+    ex = (
+        config.PLANE_LENGTH - _java_int_cast(result.last_x)
+        if inverted
+        else _java_int_cast(result.last_x)
+    )
+    return (ex, _java_int_cast(result.last_y), config.EXPLOSION_RADIUS)
+
+
+def _carve_hits_rock(game: Game, carve: tuple[int, int, int]) -> bool:
+    """True when the predicted crater disk covers any *remaining* rock.
+
+    Ground truth is the live grid (out-of-bounds never counts — the physics'
+    ``collide_point`` returns True there, so OOB is excluded explicitly).
+    A carve that hits no rock digs nothing and is never a useful sacrifice.
+    """
+    ex, ey, er = carve
+    r2 = er * er
+    for yy in range(max(0, ey - er), min(config.PLANE_HEIGHT, ey + er + 1)):
+        dy = yy - ey
+        for xx in range(max(0, ex - er), min(config.PLANE_LENGTH, ex + er + 1)):
+            dx = xx - ex
+            if dx * dx + dy * dy <= r2 and game.terrain.collide_point(xx, yy):
+                return True
+    return False
+
+
+def _digging_candidates(frame: _Frame) -> list[_Candidate]:
+    """Small cheap-first digging set aimed at the nearest enemies.
+
+    The full ladder is too expensive for 1-ply lookahead (~200 integrations +
+    sweeps per blocked turn); this set (quadratic arcs on a coarse grid plus
+    one kink and one steep dive per target, plus near-flat shots) covers the
+    useful digging directions at ~20 simulations. All carry RUNG_SACRIFICIAL;
+    a candidate that turns out to hit cleanly is relabeled RUNG_ARC by the
+    caller (corridor proof gap — a real hit, not a sacrifice).
+    """
+    cands: list[_Candidate] = []
+    mx = frame.mx
+    for tx, ty in sorted(frame.targets, key=lambda p: p[0])[:2]:
+        if abs(tx - mx) < 1e-9:
+            continue
+        s = (frame.my - ty) / (mx - tx) if abs(mx - tx) > 1e-9 else 0.0
+        for A in (-0.06, -0.03, -0.01, 0.0, 0.01, 0.03, 0.06):
+            B = s - A * (tx + mx)
+            cands.append(
+                _Candidate(
+                    expression=f"({_num(A)})*x^2+({_num(B)})*x",
+                    rung=RUNG_SACRIFICIAL,
+                    m_bound=2.0 * abs(A),
+                )
+            )
+        c = (mx + tx) / 2.0
+        denom = abs(tx - c) - abs(mx - c)
+        if abs(denom) > 1e-9:
+            a = (ty - frame.my) / denom
+            if math.isfinite(a) and abs(a) < 1e9:
+                cands.append(
+                    _Candidate(
+                        expression=f"({_num(a)})*abs(x-({_num(c)}))",
+                        rung=RUNG_SACRIFICIAL,
+                        m_bound=0.0,
+                    )
+                )
+        c = tx + 3.0
+        denom = 1.0 / (tx - c) - 1.0 / (mx - c)
+        if abs(denom) > 1e-12:
+            a = (ty - frame.my) / denom
+            nearest = min(abs(mx - c), abs(tx - c))
+            m = 2.0 * abs(a) / (nearest**3)
+            if math.isfinite(a) and math.isfinite(m) and m < 1e9:
+                cands.append(
+                    _Candidate(
+                        expression=f"({_num(a)})/(x-({_num(c)}))",
+                        rung=RUNG_SACRIFICIAL,
+                        m_bound=m,
+                    )
+                )
+    for e in ("0*x", "(0.05)*x", "(-0.05)*x"):
+        cands.append(_Candidate(expression=e, rung=RUNG_SACRIFICIAL, m_bound=0.0))
+    seen: set[str] = set()
+    uniq: list[_Candidate] = []
+    for cd in cands:
+        if cd.expression not in seen:
+            seen.add(cd.expression)
+            uniq.append(cd)
+    uniq.sort(key=lambda c: c.m_bound)
+    return uniq
+
+
+def _sacrificial_candidate(game: Game, frame: _Frame) -> _Candidate | None:
+    """1-ply digging lookahead for corridor-blocked turns.
+
+    For each digging candidate: simulate (never applying kills), predict the
+    blast center, and re-run the corridor sweep with that hypothetical crater.
+    Returns the cheapest candidate that OPENS a corridor (any target
+    reachable), else the candidate whose crater bites DEEPEST toward the enemy
+    (shooter-facing world x) — progressive tunneling: each turn's blast lands
+    as far inside the rock as the current tunnel allows, so the face advances
+    every turn until the corridor opens. Returns None when no candidate
+    touches rock (the block is teammate disks, not terrain, or every shot
+    dies off-map — the caller passes).
+
+    Blocked-column advance is NOT the metric: on a thick wall every shot dies
+    at the near flank while the sweep dies deep inside, so one crater never
+    moves the blocked column even as the tunnel advances. Penetration depth is
+    the honest nibbling signal.
+
+    Teammate-grazing candidates are rejected; a candidate that hits an enemy
+    cleanly is returned relabeled RUNG_ARC (corridor proof gap, a real hit).
+    """
+    from . import corridor
+
+    base = tuple(getattr(game, "carves", ()))
+    best: _Candidate | None = None
+    best_depth = -math.inf
+    for cand in _digging_candidates(frame):
+        hit_e, hit_t, result = _verify(game, frame, cand)
+        if hit_t:
+            continue
+        if hit_e:
+            return _Candidate(expression=cand.expression, rung=RUNG_ARC, m_bound=cand.m_bound)
+        carve = _predict_carve(result, frame.inverted)
+        if not _carve_hits_rock(game, carve):
+            continue
+        new = corridor.sweep_targets(
+            frame.mx,
+            frame.my,
+            frame.targets,
+            frame.teammates,
+            frame.circles,
+            frame.inverted,
+            carves=tuple(list(base) + [carve]),
+        )
+        if any(r.reachable for r in new):
+            return cand
+        wcx, _wcy = _plane_to_world(float(carve[0]), float(carve[1]), frame.inverted)
+        if wcx > best_depth:
+            best_depth = wcx
+            best = cand
+    return best
+
+
+def _dud_candidates(salt: int = 0, rung: str = RUNG_PASS_UNREACHABLE) -> list[_Candidate]:
+    """Safe fall-back expressions, rotated by ``salt`` (M5.1: emitted only as
+    a PASS_UNREACHABLE / SOLVER_FAILED placeholder, never as a rung).
 
     A flat line travels horizontally and, on unreachable maps, stops at terrain
     or the map edge without reaching any enemy; it is still self-verified
-    before emission.
+    before emission. The rotation (keyed by ``len(game.carves)`` at the call
+    site) cycles near-flat variants so consecutive dead turns do not repeat
+    the identical expression: each digs a slightly different crater.
+    Deterministic in the game state (no RNG), so ``test_solve_deterministic``
+    still holds for fresh games.
     """
-    return [_Candidate(expression="0*x", rung=RUNG_PASS_UNREACHABLE, m_bound=0.0)]
+    variants = (
+        "0*x",
+        "(0.05)*x",
+        "(-0.05)*x",
+        "(0.02)*x^2",
+        "(-0.02)*x^2",
+        "(0.1)*x",
+        "(-0.1)*x",
+    )
+    ordered = [variants[(salt + i) % len(variants)] for i in range(len(variants))]
+    return [_Candidate(expression=e, rung=rung, m_bound=0.0) for e in ordered]
 
 
 def _ordered_candidates(frame: _Frame) -> Iterator[_Candidate]:
@@ -455,29 +773,32 @@ def _ordered_candidates(frame: _Frame) -> Iterator[_Candidate]:
 # --- Self-verification (the simulator is the oracle) ------------------------
 
 
-def _verify(game: Game, frame: _Frame, cand: _Candidate) -> tuple[bool, bool, ShotResult]:
+def _verify(game: Game, frame: _Frame, cand: _Candidate) -> tuple[int, bool, ShotResult]:
     """Fire ``cand`` through the real integrator.
 
-    Returns ``(hit_any_enemy, hit_any_teammate, result)``. A ``MalformedFunction``
+    Returns ``(enemy_kills, hit_any_teammate, result)`` where ``enemy_kills``
+    counts distinct enemy soldiers hit (the engine is multi-kill: soldier
+    hits never stop the shot, physics.py:276-290). A ``MalformedFunction``
     (should not happen for our own emission) is reported as a dud that hits
-    nothing.
+    nothing. Truthiness is unchanged for existing call sites: ``0`` is
+    falsy, ``>= 1`` truthy.
     """
     try:
         f = PolishNotationFunction(cand.expression)
     except MalformedFunction:
-        return False, False, ShotResult()
+        return 0, False, ShotResult()
     result = process_function_range(
         f, frame.shooter, game.all_soldiers(), game.terrain, frame.inverted
     )
     enemy_ids = {(s.player_index, s.soldier_index) for s in frame.enemies}
-    hit_any_enemy = False
+    enemy_kills = 0
     hit_any_teammate = False
     for player_index, soldier_index, _pos in result.hits:
         if (player_index, soldier_index) in enemy_ids:
-            hit_any_enemy = True
+            enemy_kills += 1
         else:
             hit_any_teammate = True
-    return hit_any_enemy, hit_any_teammate, result
+    return enemy_kills, hit_any_teammate, result
 
 
 # --- Public API --------------------------------------------------------------
@@ -486,53 +807,100 @@ def _verify(game: Game, frame: _Frame, cand: _Candidate) -> tuple[bool, bool, Sh
 def solve(game: Game) -> SolverResult:
     """Solve the current turn: return a legal, self-verified expression.
 
-    M5.1 flow:
+    M5.1 flow, extended for destructible terrain and max-kill acceptance:
 
-    1. **Corridor pre-check** (:mod:`graphwar_sim.corridor`): if no enemy is
-       reachable by any clean monotone trajectory, return a safe flat dud
-       classified ``RUNG_PASS_UNREACHABLE`` — a proof, not a solver failure.
-    2. Otherwise walk the degradation ladder and return the first candidate
-       that is parseable, certified (finite bound), hits no teammate, and hits
-       at least one enemy.
-    3. If the ladder exhausts on a *reachable* map, return the safe flat dud
-       classified ``RUNG_SOLVER_FAILED`` (a fit gap, distinct from
-       unreachable).
+    1. **Corridor pre-check** (:mod:`graphwar_sim.corridor`, carve-aware): if
+       no enemy is reachable by any clean monotone trajectory, try a
+       **sacrificial dig** (:func:`_sacrificial_candidate`): a 1-ply lookahead
+       that fires into rock to blast a crater — opening the corridor now or
+       biting deeper toward the enemy (``RUNG_SACRIFICIAL``). Only when no
+       candidate touches rock (the block is teammate disks, not terrain) does
+       the turn pass as ``RUNG_PASS_UNREACHABLE`` — a proof, not a failure.
+       Dud variants rotate with ``len(game.carves)`` so consecutive dead
+       turns never repeat the identical expression.
+    2. Otherwise walk the degradation ladder for **max kills**: verify every
+       candidate (lazy ``_ordered_candidates``, order unchanged); reject on
+       teammate hit; return immediately on a perfect shot
+       (``enemy_kills == n_targets`` — for ``n_targets == 1`` this reproduces
+       first-hit behavior exactly); otherwise track ``best`` = first
+       candidate with strictly more kills than any earlier one (strict ``>``
+       keeps ladder order as the deterministic tie-break). After the ladder
+       exhausts, fire ``best`` (a partial kill, ≥1) instead of falling to
+       duds. Only when ``best is None`` (zero enemy hits anywhere) fall to
+       the rotated duds → ``RUNG_SOLVER_FAILED``.
+    3. If the ladder exhausts on a *reachable* map with no hit anywhere,
+       return a rotated safe dud classified ``RUNG_SOLVER_FAILED`` (a fit
+       gap, distinct from unreachable).
 
     :func:`solve` always returns a parseable expression and never raises for a
-    well-formed :class:`Game`.
+    well-formed :class:`Game`. Deterministic in the game state (no RNG): dud
+    rotation and digging are keyed by ``len(game.carves)`` and geometry.
     """
     frame = _build_frame(game)
+    salt = len(getattr(game, "carves", ()))
     if frame.targets:
         from . import corridor  # local import: corridor is a solver utility
 
         any_reachable = any(r.reachable for r in corridor.reachability(game))
         if not any_reachable:
-            dud = _dud_candidates()[0]
-            hit_enemy, hit_teammate, result = _verify(game, frame, dud)
-            if not hit_enemy and not hit_teammate:
-                return _make_result(dud, result, frame)
-            # Corridor says unreachable yet the flat dud self-verifies a hit:
-            # a contradiction (corridor model gap). Fall through to the ladder
-            # rather than misclassify the turn (recorded in OPEN_QUESTIONS if
-            # it ever fires).
+            dig = _sacrificial_candidate(game, frame)
+            if dig is not None:
+                hit_e, hit_t, result = _verify(game, frame, dig)
+                if not hit_t:
+                    return _make_result(dig, result, frame, kills=int(hit_e))
+                # Rejected on friendly fire (the re-verify is the authority;
+                # the lookahead already skips teammate hitters).
+            for dud in _dud_candidates(salt, RUNG_PASS_UNREACHABLE):
+                hit_enemy, hit_teammate, result = _verify(game, frame, dud)
+                if not hit_enemy and not hit_teammate:
+                    return _make_result(dud, result, frame, kills=int(hit_enemy))
+            # Corridor says unreachable yet every dud variant hits someone, or
+            # a flat dud self-verifies a hit: a contradiction (corridor model
+            # gap). Fall through to the ladder rather than misclassify the
+            # turn (recorded in OPEN_QUESTIONS if it ever fires).
+    n_targets = len(frame.targets)
+    best: _Candidate | None = None
+    best_result: ShotResult | None = None
+    best_kills = 0
     for cand in _ordered_candidates(frame):
-        hit_enemy, hit_teammate, result = _verify(game, frame, cand)
+        enemy_kills, hit_teammate, result = _verify(game, frame, cand)
         if hit_teammate:
             continue  # friendly fire — reject, fall through
-        if hit_enemy:
-            return _make_result(cand, result, frame)
-    # Ladder exhausted on a reachable (or corridor-unchecked) map: a solver
-    # gap, distinct from an unreachable target. Safe flat dud.
+        if n_targets > 0 and enemy_kills == n_targets:
+            return _make_result(cand, result, frame, kills=int(enemy_kills))
+        if enemy_kills > best_kills:
+            best = cand
+            best_result = result
+            best_kills = int(enemy_kills)
+    if best is not None and best_result is not None:
+        return _make_result(best, best_result, frame, kills=best_kills)
+    # Ladder exhausted with zero enemy hits on a reachable (or
+    # corridor-unchecked) map: a solver gap, distinct from an unreachable
+    # target. Rotated safe dud (never the same expression twice in a row);
+    # the first variant that avoids friendly fire wins, else the rotation
+    # head.
+    for dud in _dud_candidates(salt, RUNG_SOLVER_FAILED):
+        _hit_e, hit_t, result = _verify(game, frame, dud)
+        if not hit_t:
+            return _make_result(dud, result, frame, kills=int(_hit_e))
     failed = _Candidate(expression="0*x", rung=RUNG_SOLVER_FAILED, m_bound=0.0)
     _hit_e, _hit_t, result = _verify(game, frame, failed)
-    return _make_result(failed, result, frame)
+    return _make_result(failed, result, frame, kills=int(_hit_e))
 
 
-def _make_result(cand: _Candidate, result: ShotResult, frame: _Frame) -> SolverResult:
+def _make_result(
+    cand: _Candidate, result: ShotResult, frame: _Frame, kills: int | None = None
+) -> SolverResult:
     bound = cand.m_bound * _DU * _DU / 8.0
     n_hits = len(result.hits)
     n_steps = result.num_steps
-    notes = f"hits={n_hits} steps={n_steps} enemies={len(frame.enemies)}"
+    if kills is None:
+        enemy_ids = {(s.player_index, s.soldier_index) for s in frame.enemies}
+        kills = sum(1 for pi, si, _pos in result.hits if (pi, si) in enemy_ids)
+    notes = (
+        f"hits={n_hits} steps={n_steps} enemies={len(frame.enemies)}"
+        f" kills={kills}/{len(frame.targets)}"
+    )
     if cand.cert is not None:
         cert = cand.cert
         notes += (
@@ -546,6 +914,7 @@ def _make_result(cand: _Candidate, result: ShotResult, frame: _Frame) -> SolverR
         bound=bound,
         notes=notes,
         cert=cand.cert,
+        kills=kills,
     )
 
 
@@ -587,7 +956,7 @@ def run_battery(
             BatteryResult(
                 seed=seed,
                 rung=res.rung,
-                hit_any_enemy=hit_e,
+                hit_any_enemy=bool(hit_e),
                 hit_teammate=hit_t,
                 parseable=parseable,
                 certified=math.isfinite(res.bound),

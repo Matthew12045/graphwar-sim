@@ -1,9 +1,10 @@
-"""Tests for M5.5 Slice D3: the HybridAgent.
+"""Tests for M5.5 Slice D3: the HybridAgent (single-shot planning: one API
+call, no tools, first plan stands).
 
 - the isolation guarantee (M5.5.1/M5.5.8): the LLM's text NEVER reaches the
   parser and is NEVER emitted — the fired expression is the CCF solver's;
-- the schema loop (M5.5.3): corrections are cheap, ``schema_errors`` is its
-  own counter;
+- single-shot plans (M5.5.3): no valid plan from the one call falls through
+  to the M2 rung, ``schema_errors`` is its own counter;
 - the relaxation ladder (M5.5.5): lowest-priority dropped first, ties by the
   most-binding (tightest tol); ``UNREACHABLE`` stops the ladder with an
   explicit report;
@@ -160,7 +161,7 @@ def test_feedback_never_contains_the_expression() -> None:
     assert "CERTIFIED" in feedback
     assert "binding:" in feedback
     assert "sigma=" in feedback
-    assert "simulate_tool calls remaining" in feedback
+    assert "simulate_tool" not in feedback  # no simulate tool anymore
 
 
 def test_feedback_rides_the_next_turn_message() -> None:
@@ -175,43 +176,38 @@ def test_feedback_rides_the_next_turn_message() -> None:
     assert "ATTEMPT" in first_user_message
 
 
-# --- schema loop (M5.5.3) --------------------------------------------------------
+# --- single-shot plans (M5.5.3): no correction rounds ---------------------------
 
 
-def test_prose_then_valid_plan_corrects_cheaply() -> None:
+def test_prose_without_a_plan_falls_through_to_m2() -> None:
+    """One call, no JSON plan: schema_errors counts it and the turn falls
+    straight through to the deterministic M2 rung (no correction round)."""
+    from graphwar_sim.solver import solve as m2_solve
+
     game, obs = _game_and_obs()
-    agent = _hybrid_agent([_Response("end_turn", [_Text("no plan here")]), _plan_text(EMPTY_PLAN)])
+    agent = _hybrid_agent([_Response("end_turn", [_Text("no plan here")])])
     expr = agent.act(game, obs)
-    assert expr != SAFE_DUD  # the second round's plan was accepted
+    assert expr == m2_solve(game).expression  # M2 fallback, not the dud
     stats = agent.stats()
     assert stats.schema_errors == 1  # its OWN counter
     assert stats.parse_failures == 0  # never mixed into solver failures
     assert stats.retries == 0
-    # The correction message reached the model.
-    last_messages = agent._client.messages.calls[-1]["messages"]
-    assert any("no JSON plan found" in m["content"] for m in last_messages)
+    assert stats.m2_fallbacks == 1
+    assert len(agent._client.messages.calls) == 1  # single-shot
 
 
-def test_schema_invalid_plan_is_corrected_without_a_solver_attempt() -> None:
+def test_schema_invalid_plan_falls_through_to_m2() -> None:
+    """A schema-invalid first plan is counted, not corrected: M2 fires."""
+    from graphwar_sim.solver import solve as m2_solve
+
     bad = '{"target_id": "enemy_9", "waypoints": []}'
     game, obs = _game_and_obs()
-    agent = _hybrid_agent([_plan_text(bad), _plan_text(EMPTY_PLAN)])
+    agent = _hybrid_agent([_plan_text(bad)])
     expr = agent.act(game, obs)
-    assert expr != SAFE_DUD
+    assert expr == m2_solve(game).expression
     stats = agent.stats()
     assert stats.schema_errors == 1
-    last_messages = agent._client.messages.calls[-1]["messages"]
-    assert any("dead target_id" in m["content"] for m in last_messages[1:])
-
-
-def test_round_cap_without_a_plan_fires_the_safe_dud() -> None:
-    game, obs = _game_and_obs()
-    agent = _hybrid_agent(
-        [_Response("end_turn", [_Text("no json")]) for _ in range(8)], tool_rounds=3
-    )
-    expr = agent.act(game, obs)
-    assert expr == SAFE_DUD
-    assert agent.stats().schema_errors == 3
+    assert len(agent._client.messages.calls) == 1  # single-shot
 
 
 # --- isolation (M5.5.8) -----------------------------------------------------------

@@ -7,16 +7,16 @@ text — is what reaches the parser. The LLM cannot violate the "bare
 expression" rule because its output is JSON that never touches the parser;
 that is the whole reason HybridAgent exists.
 
-Turn structure:
+Turn structure (single-shot planning: one API call, no tools, first plan
+stands):
 
 1. the turn message carries the M5.5.2 shooter-relative geometry, a compact
    corridor summary (free vertical intervals per ``u`` — teammate bands
    PRE-applied per M5.5.7, so friendly-fire avoidance is by construction),
-   the persona shape prior, the previous attempt's feedback, and the live
-   simulate budget;
-2. the LLM may probe through the budgeted simulate tool and finally returns
-   ONLY the plan JSON. Schema-invalid plans get a correction message WITHOUT
-   burning a solver attempt; ``schema_errors`` is its own counter (M5.5.3);
+   the persona shape prior, and the previous attempt's feedback;
+2. the LLM returns ONLY the plan JSON. A schema-invalid plan is counted in
+   ``schema_errors`` and the turn falls through to the M2 rung — no
+   correction rounds (M5.5.3 counter retained, loop removed);
 3. the plan's waypoints become CCF corridor TIGHTENINGS
    (:func:`graphwar_sim.ccf.solve_target` with ``waypoints=``); the
    relaxation ladder (M5.5.5) drops the lowest-priority waypoint on an
@@ -28,8 +28,8 @@ Turn structure:
    best-effort shot (:func:`graphwar_sim.solver.solve`) instead of the dud —
    certified first, best effort second, safe dud last;
 4. the M5.5.6 feedback (outcome, binding + sigma, dropped/applied waypoint
-   names, emitted length, remaining simulate budget — NEVER the expression)
-   rides the next turn's message.
+   names, emitted length — NEVER the expression) rides the next turn's
+   message.
 
 Isolation (M5.5.8): the LLM's raw text is never emitted — a valid expression
 in ``rationale`` changes nothing (``rationale`` is truncated and logged
@@ -80,14 +80,8 @@ from graphwar_sim.corridor import (
 from graphwar_sim.solver import solve as m2_solve
 
 from .base import Observation
-from .llm_agent import (
-    _COMMIT_ROUNDS,
-    SAFE_DUD,
-    LLMAgent,
-    _response_text,
-)
+from .llm_agent import SAFE_DUD, LLMAgent, _response_text
 from .personas import PERSONAS
-from .simulate_budget import BudgetedSimulator
 from .waypoints import PlanSchemaError, WaypointPlan, WaypointSpec, parse_plan
 
 # Corridor-summary sample step (shooter-relative world units).
@@ -104,9 +98,10 @@ You plan artillery shots. You do NOT write mathematical expressions.
 A certified solver turns your plan into a curve. It proves the curve clears \
 terrain and teammates, or it tells you exactly why it cannot. Your job is to \
 choose targets and suggest a route shape. The solver's job is the math. \
-Terrain is INDESTRUCTIBLE (destructible terrain is a planned mechanic, not \
-yet live): the solver routes around rock, never through it — plan clearance \
-accordingly.
+Terrain is DESTRUCTIBLE: each shot blasts a small crater (~0.8 world units) \
+out of the rock at its impact point and craters persist; the solver routes \
+around existing rock and through freshly blasted craters it can certify — plan \
+clearance accordingly; a first shot can dig open a wall for the next one.
 
 Coordinates are SHOOTER-RELATIVE: your soldier is at (0, 0). Positive u is \
 toward the target. All values you emit use this frame.
@@ -138,10 +133,10 @@ tell you which it dropped. Do not try to force a curve by over-specifying: \
 three loose waypoints beat eight tight ones. If you do not know where the \
 curve should go, return an empty waypoint list and let the solver decide.
 
-There is no cap on API rounds — take the probes you need, but spend \
-them on genuine uncertainty, not on confirming a plan the solver \
-already certified. Your per-turn simulate_tool allowance is stated in \
-the turn message ("unlimited" means no cap)."""
+You get exactly one shot at the plan per turn: there is no simulate tool \
+and no second attempt. Read the corridor summary, pick the target and \
+route shape with the widest open intervals, and commit. An empty waypoint \
+list is always acceptable — the solver decides the curve itself."""
 
 
 # M5.5.7: the persona shape prior (prepended to the turn message; the persona
@@ -310,11 +305,10 @@ def _feedback_message(
     dropped: list[str],
     emitted_length: int | None,
     char_limit: int,
-    remaining: int | str,
 ) -> str:
     """The M5.5.6 feedback: names a SPECIFIC sigma/binding, lists dropped and
-    applied waypoints, states the remaining budget — NEVER the expression
-    (M5.5.6: the model cannot improve it and would hand-edit it)."""
+    applied waypoints — NEVER the expression (M5.5.6: the model cannot
+    improve it and would hand-edit it)."""
     head = f"ATTEMPT — {outcome}"
     if slack is not None:
         head += f" (slack {slack:.2f})"
@@ -324,7 +318,6 @@ def _feedback_message(
         f"  dropped waypoints: [{', '.join(dropped) if dropped else ''}]",
         f"  applied waypoints: [{', '.join(applied) if applied else ''}]",
         f"  emitted length: {emitted_length if emitted_length is not None else 0} / {char_limit}",
-        f"  simulate_tool calls remaining: {remaining}",
     ]
     if dropped:
         first_u = dropped[0].split(" ")[0].removeprefix("u=")
@@ -363,7 +356,6 @@ def solve_plan_with_ladder(
     fr: ShooterFrame,
     targets: Sequence[tuple[float, float]],
     plan: WaypointPlan,
-    sim: BudgetedSimulator,
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> _HybridSolve:
     """M5.5.4 + M5.5.5, agent-free: the plan's waypoints become CCF
@@ -393,6 +385,7 @@ def solve_plan_with_ladder(
             fr.inverted,
             target_index,
             waypoints=wps,
+            carves=fr.carves,
         )
         outcome = sol.certificate.outcome
         if outcome in (CCFOutcome.CERTIFIED, CCFOutcome.UNCERTIFIED, CCFOutcome.UNREACHABLE):
@@ -404,13 +397,12 @@ def solve_plan_with_ladder(
             f"u={removed.u:.2f} (priority {removed.priority}) dropped: {outcome.value}"
         )
     assert sol is not None
-    return _finalize_solve(sol, plan, sim, dropped_total, list(current), on_event)
+    return _finalize_solve(sol, plan, dropped_total, list(current), on_event)
 
 
 def _finalize_solve(
     sol: CCFSolution,
     plan: WaypointPlan,
-    sim: BudgetedSimulator,
     dropped_total: list[str],
     final_wps: list[WaypointSpec],
     on_event: Callable[[str, dict[str, Any]], None] | None,
@@ -427,7 +419,6 @@ def _finalize_solve(
             expression = matching[0].expression
     dropped_all = dropped_total + list(cert.dropped_waypoints)
     applied = [f"u={w.u:.2f}" for w in final_wps]
-    remaining: int | str = "unlimited" if sim.unlimited else sim.remaining
     feedback = _feedback_message(
         outcome=cert.outcome.value,
         slack=cert.slack_total,
@@ -437,7 +428,6 @@ def _finalize_solve(
         dropped=dropped_all,
         emitted_length=cert.emitted_length,
         char_limit=cert.char_limit,
-        remaining=remaining,
     )
     _emit_event(
         on_event,
@@ -466,19 +456,15 @@ class HybridAgent(LLMAgent):
     (the M2 best-effort rung when no curve certifies, the safe dud only when
     no plan lands or that fails too). The LLM's raw text is never emitted
     and never reaches the parser (M5.5.8 isolation). Streaming/retry/cancel/
-    event-sink/budgeted-simulate machinery is inherited from
-    :class:`LLMAgent` (the Slice C cancel checks ride the same ``_create``
-    path).
+    event-sink machinery is inherited from :class:`LLMAgent` (the Slice C
+    cancel checks ride the same ``_create`` path).
     """
 
     def __init__(
         self,
         model: str,
-        max_attempts: int = 1,
         client: Any | None = None,
         reasoning_effort: str | None = None,
-        simulate_budget: int | None = None,
-        tool_rounds: int | None = None,
         persona: str | None = None,
         cancel_requested: Callable[[], bool] | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
@@ -487,11 +473,8 @@ class HybridAgent(LLMAgent):
             raise ValueError(f"unknown persona: {persona!r} (known: {', '.join(sorted(PERSONAS))})")
         super().__init__(
             model=model,
-            max_attempts=max_attempts,
             client=client,
             reasoning_effort=reasoning_effort,
-            simulate_budget=simulate_budget,
-            tool_rounds=tool_rounds,
             persona=None,  # the M5.4 verifier game does not apply here
             cancel_requested=cancel_requested,
             on_event=on_event,
@@ -504,11 +487,9 @@ class HybridAgent(LLMAgent):
         self._last_feedback: str | None = None
 
     def act(self, game: Game, obs: Observation) -> str:
-        """One hybrid turn: plan JSON -> validate -> CCF solve -> relax ->
-        fire the solver's expression (the M2 best-effort rung when nothing
-        certifies, the safe dud only when that fails too)."""
-        sim = BudgetedSimulator(game, budget=self._simulate_budget)
-        sim.new_turn()
+        """One hybrid turn: single-shot plan JSON -> validate -> CCF solve ->
+        relax -> fire the solver's expression (the M2 best-effort rung when
+        nothing certifies, the safe dud only when that fails too)."""
         self._last_assistant_text = None
         self._round_counter = 0
         expr = SAFE_DUD
@@ -519,11 +500,11 @@ class HybridAgent(LLMAgent):
             if targets:
                 target_ids = [f"enemy_{i}" for i in range(len(targets))]
                 messages: list[dict[str, Any]] = [
-                    {"role": "user", "content": self._turn_message(fr, sim, obs.turn_index)}
+                    {"role": "user", "content": self._turn_message(fr, obs.turn_index)}
                 ]
-                plan = self._collect_plan(messages, sim, target_ids, targets, fr.mx, fr.my)
+                plan = self._collect_plan(messages, target_ids, targets, fr.mx, fr.my)
                 if plan is not None:
-                    solve = self._solve_with_ladder(fr, targets, plan, sim)
+                    solve = self._solve_with_ladder(fr, targets, plan)
                     feedback = solve.feedback
                     self._stats.waypoints_applied += solve.applied
                     self._stats.waypoints_dropped += solve.dropped
@@ -537,12 +518,13 @@ class HybridAgent(LLMAgent):
                         # also passes, but any hittable board gets a real shot.
                         expr = self._m2_fallback(game)
                     self._bump_outcome_counter(solve.outcome)
+                else:
+                    # No valid plan from the single shot: straight to the M2
+                    # rung (schema_errors already counted in _collect_plan).
+                    expr = self._m2_fallback(game)
         except Exception:  # noqa: BLE001 - the match must never crash on one turn
             self._stats.parse_failures += 1
             self._stats.retries += 1
-        finally:
-            self._stats.simulate_calls += sim.calls_used
-            self._stats.simulate_denied += sim.denied_used
         self._last_feedback = feedback
         self._emit("commit", {"expr": expr})
         return expr
@@ -574,10 +556,10 @@ class HybridAgent(LLMAgent):
         except Exception:  # noqa: BLE001 - the match must never crash on one turn
             return SAFE_DUD
 
-    def _turn_message(self, fr: ShooterFrame, sim: BudgetedSimulator, turn_index: int) -> str:
+    def _turn_message(self, fr: ShooterFrame, turn_index: int) -> str:
         """The M5.5.2 turn message: shooter-relative geometry + corridor
         summary (teammate bands pre-applied) + persona overlay + previous
-        feedback + live budget."""
+        feedback."""
         mx, my = fr.mx, fr.my
         band_world = map_y_bounds()
         targets = sorted(fr.targets, key=lambda p: p[0])
@@ -607,96 +589,64 @@ class HybridAgent(LLMAgent):
             lines.extend(["", overlay])
         if self._last_feedback:
             lines.extend(["", "previous attempt:", self._last_feedback])
-        remaining: int | str = "unlimited" if sim.unlimited else sim.remaining
-        lines.extend(["", f"simulate_tool calls remaining: {remaining}"])
         lines.append("Return ONLY the JSON plan object.")
         return "\n".join(lines)
 
     def _collect_plan(
         self,
         messages: list[dict[str, Any]],
-        sim: BudgetedSimulator,
         target_ids: list[str],
         targets: list[tuple[float, float]],
         mx: float,
         my: float,
     ) -> WaypointPlan | None:
-        """API rounds until a SCHEMA-VALID plan arrives (M5.5.3).
-
-        Schema errors are corrected in-loop WITHOUT burning a solver attempt
-        (``schema_errors`` is its own counter); the budgeted simulate tool
-        stays available between rounds. ``None`` when an explicit round cap
-        is spent without a valid plan (uncapped, the loop runs until a plan
-        lands, the cancel fires, or an error aborts).
-        """
+        """The turn's single planning call (M5.5.3): parse the first output;
+        ``None`` on missing/invalid JSON (``schema_errors`` counts it, the
+        caller falls through to the M2 rung — no correction rounds)."""
         band_world = map_y_bounds()
         target_u_T = {tid: targets[i][0] - mx for i, tid in enumerate(target_ids)}
-        rounds_left: float = float("inf") if self._tool_rounds is None else self._tool_rounds
-        used = 0
-        while used < rounds_left:
-            self._check_cancel()
-            force = rounds_left - used <= _COMMIT_ROUNDS
-            self._round_counter += 1
-            self._emit("round", {"n": self._round_counter, "force_commit": force})
-            response = self._create(messages, force_commit=force)
-            used += 1
-            text = _response_text(response)
-            if text:
-                self._last_assistant_text = text
-                self._emit("text", {"text": text})
-            if response.stop_reason == "tool_use":
-                self._dispatch_tool_round(response, sim, messages, commit_warning=False)
-                continue
-            raw = _extract_json_object(text)
-            if raw is None:
-                self._stats.schema_errors += 1
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": "no JSON plan found — return ONLY the JSON object "
-                        "matching the schema (no prose, no fences).",
-                    }
-                )
-                continue
-            try:
-                plan = parse_plan(
-                    raw,
-                    target_u_T=target_u_T,
-                    band_lo=band_world[0] - my,
-                    band_hi=band_world[1] - my,
-                    styles=set(PERSONAS),
-                )
-            except PlanSchemaError as exc:
-                self._stats.schema_errors += 1
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": f"schema error: {exc} — fix the plan and return "
-                        "ONLY the JSON object.",
-                    }
-                )
-                continue
-            self._emit(
-                "plan",
-                {
-                    "target": plan.target_id,
-                    "n_waypoints": len(plan.waypoints),
-                    "branch_hint": plan.branch_hint,
-                },
+        self._check_cancel()
+        self._round_counter += 1
+        self._emit("round", {"n": self._round_counter})
+        response = self._create(messages)
+        text = _response_text(response)
+        if text:
+            self._last_assistant_text = text
+            self._emit("text", {"text": text})
+        raw = _extract_json_object(text)
+        if raw is None:
+            self._stats.schema_errors += 1
+            return None
+        try:
+            plan = parse_plan(
+                raw,
+                target_u_T=target_u_T,
+                band_lo=band_world[0] - my,
+                band_hi=band_world[1] - my,
+                styles=set(PERSONAS),
             )
-            return plan
-        return None
+        except PlanSchemaError:
+            self._stats.schema_errors += 1
+            return None
+        self._emit(
+            "plan",
+            {
+                "target": plan.target_id,
+                "n_waypoints": len(plan.waypoints),
+                "branch_hint": plan.branch_hint,
+            },
+        )
+        return plan
 
     def _solve_with_ladder(
         self,
         fr: ShooterFrame,
         targets: list[tuple[float, float]],
         plan: WaypointPlan,
-        sim: BudgetedSimulator,
     ) -> _HybridSolve:
         """The M5.5.5 relaxation ladder — the drop logic lives in
         :func:`solve_plan_with_ladder` (shared with the D4 battery)."""
-        return solve_plan_with_ladder(fr, targets, plan, sim, on_event=self._on_event)
+        return solve_plan_with_ladder(fr, targets, plan, on_event=self._on_event)
 
 
 __all__ = ["HybridAgent", "solve_plan_with_ladder"]

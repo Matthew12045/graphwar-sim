@@ -410,13 +410,40 @@ Three commits, one per slice, subjects prefixed M5.4:
   round (and produced the Gate 1b turn-1 hit). The commit guardrail remains
   as insurance: its strictly-better override has not yet fired live.
 ==============================================================================
-PLANNED (not started, owner: Matt): destructible terrain
-  Shots crater rock — blasts shrink/remove terrain circles and open corridors
-  mid-match. When it lands, the sim (blast vs. circle resolution), the CCF
-  corridor/branch DP, the M2 ladder, and both system prompts must learn the
-  new mechanic. The prompts already carry the placeholder context
-  ("INDESTRUCTIBLE ... planned mechanic, not yet live" in llm_agent.py
-  _SYSTEM_PROMPT and hybrid_agent.py _hybrid_system_prompt), so the rule flip
-  is a physics + wording change, not a prompt redesign. Recorded 2026-09-08.
+IMPLEMENTED (2026-09-08): destructible terrain
+  Every shot carves an EXPLOSION_RADIUS=12 crater (Game.fire + Obstacle.carve);
+  corridor/CCF subtract carve disks (carve-aware sweep, cell envelope, branch
+  DP); both system prompts flipped to DESTRUCTIBLE; UI punches white craters
+  via board `carves` and the think-bubble grows (300px cap, 14-line cap).
+  Tests: tests/test_destructible_terrain.py (10) + board carves test green.
+==============================================================================
+IMPLEMENTED (2026-09-08): one-shot max-kill acceptance (ranking over ladder)
+  Default behavior change (no opt-in): solve() maximizes enemy kills over the
+  existing ladder. _verify returns the enemy-hit COUNT (engine is multi-kill:
+  physics.py:276-290, strict <7px dedup); ladder walk rejects teammate
+  grazers, returns immediately on perfect kills==n_targets (n_targets==1
+  reproduces first-hit exactly), else keeps the first strictly-greater kill
+  count (ladder order = deterministic tie-break) and fires it; only zero-hit
+  falls to rotated duds -> RUNG_SOLVER_FAILED. Corridor pre-check + dig path
+  unchanged. SolverResult gains kills:int|None (notes append kills=k/n);
+  rung taxonomy unchanged; eval/runner classification untouched;
+  hybrid_agent.solve_plan_with_ladder untouched (inherits via m2_solve only).
+  Tests: 5 new (collinear 2-kill synthetic + refire; 1-then-2 ranking;
+  equal-kill tie-break; friendly-fire dominance; single-target first-hit) +
+  test_ccf_rung_is_lazy rewritten for max-kill (perfect short-circuits CCF;
+  partial reaches CCF; miss exhausts). Gates: pytest tests/ green (300
+  non-golden + golden, EXIT 0), ruff check clean, mypy --strict clean (29).
+  Ceiling battery seeds 1-40 (this session, after): 2v2 kill-all 11/40
+  (before 9/40); 4v4 kill-all 8/40 (before 5/40). Reachability split: 2v2
+  fit-gap (all reachable, no kill-all) 29/40, dig-territory 0/40; 4v4
+  fit-gap 32/40, dig 0/40. Latency: max solve 5.80s (2v2 seed 33), 4.12s
+  (4v4 seed 24) - no seed >10s, no budget cap. Eval --from-seeds
+  eval/results/seeds.json -> /tmp/maxkill_eval (30 matches, scratch, committed
+  leaderboard.md untouched): solver 0.800 win / 0.158 hit / 36 kills
+  (vs M5.2 board 0.750/0.152/33; draws 2 vs 12 - multi-kill ends games;
+  rungs SOLVER_FAILED=160 ccf=6 arc=10 per_target=7 parabola=2 line=4
+  fixed_grid=1). PHASE-2 GATE: TRIPPED - 29/40 (72%) 2v2 fit-gap >= 1/3, open a
+  phase-2 plan for multi-target generators (multi-enemy fits, visit-all
+  corridor chain). Baseline shift intended; nothing committed (owner commits).
 ==============================================================================
 END OF REPORT

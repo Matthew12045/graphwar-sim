@@ -39,7 +39,8 @@ SOLDIER_SELECTION_RADIUS: int = 15
 # GraphServer.java:687 (the literal 20 in testSoldier).
 SOLDIER_MIN_CHEBYSHEV: int = 20
 
-# --- Explosion marker (drives the last-point marker; not part of hit test) --
+# --- Explosion marker (also carves terrain: every shot ends in a blast that ---
+# --- clears an EXPLOSION_RADIUS crater out of the rock; see Game.fire) --------
 # Constants.java:79
 EXPLOSION_RADIUS: int = 12
 

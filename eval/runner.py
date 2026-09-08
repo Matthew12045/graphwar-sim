@@ -159,9 +159,13 @@ def _state_hash(game: Game) -> tuple[object, ...]:
     """M5.1 dedupe key: the board state that determines a shot's outcome.
 
     Positions + alive flags of every soldier, plus the current shooter
-    identity (team + soldier). The global turn index is intentionally NOT
-    included: a recurring (shooter, board) with an identical expression is a
-    repeat attempt even though the turn counter advanced.
+    identity (team + soldier), plus the crater count. The crater count is
+    load-bearing since destructible terrain landed: every shot carves, so two
+    turns with identical soldiers but different ``len(carves)`` face different
+    terrain and an identical expression is a *new* digging attempt, not a
+    repeat. The global turn index is intentionally NOT included: a recurring
+    (shooter, board, craters) with an identical expression is a repeat attempt
+    even though the turn counter advanced.
     """
     team = game.state.current_team()
     shooter = team.current_soldier()
@@ -174,7 +178,7 @@ def _state_hash(game: Game) -> tuple[object, ...]:
             # fields are only assigned inside fire() (all_soldiers), so they
             # would make turn-0 and later hashes differ spuriously.
             soldiers.append((j, k, s.alive, s.x, s.y))
-    return (team.team, shooter_j, shooter_k, tuple(soldiers))
+    return (team.team, shooter_j, shooter_k, tuple(soldiers), len(getattr(game, "carves", ())))
 
 
 def play_match(

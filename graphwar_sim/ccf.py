@@ -749,6 +749,7 @@ def _branch_paths(
     inverted: bool,
     target_index: int,
     k_paths: int,
+    carves: Sequence[tuple[int, int, int]] = (),
 ) -> list[Chain]:
     """K branch paths for one target from a dedicated branch-path DP (5.2.md §8).
 
@@ -796,6 +797,7 @@ def _branch_paths(
     chosen terminal is the next-cheapest distinct path.
     """
     circ = [(config.PLANE_LENGTH - cx, cy, r) for cx, cy, r in circles] if inverted else circles
+    carv = [(config.PLANE_LENGTH - cx, cy, r) for cx, cy, r in carves] if inverted else carves
     radius = corridor.WORLD_RADIUS
     d = corridor._SLOPE_CAP * _DU
 
@@ -806,14 +808,14 @@ def _branch_paths(
     k_max = int(math.ceil(span / _DU))
     columns: list[float] = []
     comps_by_col: list[list[tuple[float, float]]] = []
-    comps0 = corridor._column_free(mx, circ, exclusions)
+    comps0 = corridor._column_free(mx, circ, exclusions, carv)
     if not comps0:
         return []
     columns.append(mx)
     comps_by_col.append(comps0)
     for k in range(1, k_max + 1):
         wx = mx + k * _DU
-        comps = corridor._column_free(wx, circ, exclusions)
+        comps = corridor._column_free(wx, circ, exclusions, carv)
         if not comps:
             break
         columns.append(wx)
@@ -1263,6 +1265,7 @@ def solve_target(
     char_limit: int | None = None,
     milp_time_budget: float | None = None,
     waypoints: Sequence[CorridorWaypoint] = (),
+    carves: Sequence[tuple[int, int, int]] = (),
 ) -> CCFSolution:
     """Run the full CCF search for ONE target (5.2.md §8-§9).
 
@@ -1307,6 +1310,7 @@ def solve_target(
         du=_DU,
         max_branches=_SWEEP_CHAINS,
         teammate_radius=corridor.CCF_TEAMMATE_RADIUS,
+        carves=carves,
     )
     if not reach.reachable:
         cert.outcome = CCFOutcome.UNREACHABLE
@@ -1334,9 +1338,9 @@ def solve_target(
     dead_branches = 0
     dropped_waypoints: list[str] = []
     for chain in _branch_paths(
-        mx, my, tx, ty, circles, exclusions, inverted, target_index, k_branches
+        mx, my, tx, ty, circles, exclusions, inverted, target_index, k_branches, carves
     ):
-        cells = corridor.chain_cells(chain, mx, circles, exclusions, _DU)
+        cells = corridor.chain_cells(chain, mx, circles, exclusions, _DU, carves)
         if cells is None:
             dead_branches += 1
             continue
@@ -1512,6 +1516,7 @@ def solve_for_frame(
     max_branches: int | None = None,
     char_limit: int | None = None,
     milp_time_budget: float | None = None,
+    carves: Sequence[tuple[int, int, int]] = (),
 ) -> CCFResult:
     """Run CCF for the nearest reachable targets (5.2.md §8-§9).
 
@@ -1537,6 +1542,7 @@ def solve_for_frame(
             max_branches=max_branches,
             char_limit=char_limit,
             milp_time_budget=milp_time_budget,
+            carves=carves,
         )
         certificates.append(sol.certificate)
         all_candidates.extend(sol.candidates)
@@ -1562,4 +1568,6 @@ def solve_for_game(game: object) -> CCFResult:
     seam :func:`graphwar_sim.solver.solve` and the M5.4/M5.5 agents consume.
     """
     fr = corridor.shooter_frame(game)  # type: ignore[arg-type]
-    return solve_for_frame(fr.mx, fr.my, fr.targets, fr.teammates, fr.circles, fr.inverted)
+    return solve_for_frame(
+        fr.mx, fr.my, fr.targets, fr.teammates, fr.circles, fr.inverted, carves=fr.carves
+    )

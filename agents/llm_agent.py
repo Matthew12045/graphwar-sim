@@ -1,61 +1,50 @@
-"""LLMAgent: an Anthropic-Messages-API agent with a budgeted simulate tool.
+"""LLMAgent: an Anthropic-Messages-API agent. SINGLE-SHOT per turn.
 
 The agent plays one soldier per turn through a **fresh conversation** (no
-cross-turn memory):
+cross-turn memory) with **exactly one API call and no tools**: whatever the
+model outputs first is validated and fired — there are no probe rounds, no
+re-attempts, no commit guardrail. Accuracy comes from the turn's context,
+not from iteration:
 
 - the **system prompt** is the shared core prepend adapted to the engine's
   REAL frame — centered world, shooter facing right, the auto vertical
   offset of ``graphwar_sim.physics.process_function_range`` (the frame
-  contract of :class:`~agents.base.Observation`) — and the REAL
-  :class:`~agents.simulate_tool.SimResult` fields. An optional **persona**
+  contract of :class:`~agents.base.Observation`). An optional **persona**
   (``persona="<id>"``, one of :data:`agents.personas.PERSONAS`) appends its
   STYLE block after the byte-identical core and attaches the persona's
   machine verifier (M5.4.1): every turn's FIRED expression is verified and
   the verdict lands in ``rung_history`` (``PASS`` / ``CONSTRAINT_VIOLATION``
   / ``MAGICIAN_FULL`` / ``MAGICIAN_PARTIAL(n,m)``) plus the
   ``constraint_*`` stat counters. Verifier oracle calls are FREE (the pure
-  :func:`agents.simulate_tool.simulate`, never the agent's budget).
+  :func:`agents.simulate_tool.simulate`, never charged anywhere).
 - the **per-turn user message** serializes the observation verbatim (the
   frame every other agent reads — coordinates are NOT re-derived, shifted,
-  or re-centered) plus the live simulate budget ("simulate calls remaining:
-  N", the M5.5.6 feedback format, fed by
-  :attr:`BudgetedSimulator.remaining`).
-- probes go through :class:`~agents.simulate_budget.BudgetedSimulator`
-  (``DEFAULT_SIMULATE_BUDGET`` per turn); a denial returns a tool_result
-  error that doubles as the loop's cost stop-signal. Denied calls never
-  delegate (the wrapper raises first), so no oracle information leaks.
-- a final answer is validated with the real parser; malformed emissions
-  count ``parse_failures`` / ``retries`` (the same counters RandomAgent
-  exposes) and get a reference-style correction quoting
-  ``type(exc).__name__`` (the reference exception is message-free,
-  ``docs/GROUND_TRUTH.md`` §3.6). Budget exhaustion (all attempts failed)
-  returns the repo's safe dud ``"0*x"`` (``eval/runner.py:227``,
-  ``agents/baselines.py:57``).
+  or re-centered) plus deterministic CLEAR LANE intervals: the corridor's
+  free vertical ranges per world-x sample (terrain- and crater-aware via
+  :func:`graphwar_sim.corridor._column_free`, teammate disks pre-removed),
+  so the model picks a provably open lane instead of guessing one.
+- the single answer is validated with the real parser; a malformed emission
+  counts ``parse_failures`` / ``retries`` (the same counters RandomAgent
+  exposes) and fires the repo's safe dud ``"0*x"``
+  (``eval/runner.py:227``, ``agents/baselines.py:57``).
 - ``stats()`` maps the counters the runner merges into the match stats
-  (``eval/runner.py``): parse_failures, retries, simulate_calls,
-  simulate_denied, and guardrail_overrides (accumulated across turns).
-  ``simulate_calls`` counts ALL oracle calls — probes AND the commit
-  guardrail's check of the final candidate (M5.4; skipped when no probe ran).
-- M5.4 commit guardrail: a validated candidate is oracle-checked through the
-  same :class:`BudgetedSimulator` before it fires; when the turn's best
-  probed expression scores STRICTLY better (:func:`_probe_score` — teammate
-  hits rank worst, reach before distance, nearest_miss as the gradient) the
-  probe fires instead and ``guardrail_overrides`` increments. Ties go to the
-  commit.
+  (``eval/runner.py``): parse_failures, retries, simulate_calls (always 0 —
+  no oracle calls), simulate_denied (always 0), and guardrail_overrides
+  (always 0, retained for the runner's merge shape).
 - Cancellation (Slice C): the optional ``cancel_requested`` callback (a
-  module-level :class:`threading.Event` in the UI server) is checked between
-  API rounds and between stream deltas; a set callback raises
+  module-level :class:`threading.Event` in the UI server) is checked around
+  the single call and between stream deltas; a set callback raises
   :class:`TurnCancelled` — deliberately a ``BaseException`` so ``act``'s
   catch-all ``except Exception`` cannot convert a cancel into a dud shot.
   Eval passes no callback (the default never fires).
 - Live activity feed (Slice B): the optional ``on_event`` callback (or a
   per-turn sink via :meth:`set_event_sink`) receives
-  ``("round"|"text"|"tool_call"|"tool_result"|"guardrail"|"persona"|"commit"|"delta",
-  payload)`` events as the turn progresses — the UI server routes them into
-  its activity ring for the polling feed. Delta events forward the real SDK
-  stream's ``content_block_delta`` text/thinking chunks (duck-typed, guarded;
-  the gateway may expose no thinking at all, and the non-streaming test
-  fakes get no deltas — both documented no-ops). A broken sink never crashes
+  ``("round"|"text"|"persona"|"commit"|"delta", payload)`` events as the
+  turn progresses — the UI server routes them into its activity ring for
+  the polling feed. Delta events forward the real SDK stream's
+  ``content_block_delta`` text/thinking chunks (duck-typed, guarded; the
+  gateway may expose no thinking at all, and the non-streaming test fakes
+  get no deltas — both documented no-ops). A broken sink never crashes
   a turn.
 
 Known limitation (documented, deliberately not engineered around): ``name``
@@ -79,7 +68,6 @@ generations at 120s); the fakes exercise the non-streaming fallback.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from collections.abc import Callable, Iterable
@@ -92,30 +80,11 @@ from graphwar_sim.parser import MalformedFunction
 from .base import AgentStats, Observation
 from .personas import PERSONAS
 from .personas.verifiers import VERIFIERS, VerdictKind, VerifierContext, VerifierVerdict
-from .simulate_budget import BudgetedSimulator, SimulateBudgetExhausted
-from .simulate_tool import SimResult
 
 # The repo-wide last-resort emission: a guaranteed-parseable shot that goes
 # nowhere (eval/runner.py:227, agents/baselines.py:57,92). # TUNABLE —
 # not from source (repo convention).
 SAFE_DUD: str = "0*x"
-
-# Total emission attempts per turn (each attempt = API round-trips until a
-# final answer; rounds per attempt are uncapped unless tool_rounds is set).
-# Exhaustion returns the safe dud. # TUNABLE — not from source.
-_DEFAULT_MAX_ATTEMPTS: int = 4
-
-# The standard API round-trip cap per TURN, for callers that want one
-# (eval ablation grids); the live default is UNLIMITED (``tool_rounds=None``)
-# — a turn ends on a commit, an attempts exhaustion, or the UI cancel, never
-# on a round count. A budget-burned round costs one round but does not end an
-# attempt. # TUNABLE — not from source.
-_MAX_TOOL_ROUNDS_PER_TURN: int = 8
-
-# The last rounds of a turn force a text-only commit (tool_choice "none") —
-# a stochastic thinker that keeps calling tools otherwise. # TUNABLE —
-# not from source.
-_COMMIT_ROUNDS: int = 2
 
 # max_tokens for every API call — the model's full 128k context budget
 # (user-locked). History: at the DEFAULT reasoning effort (xhigh) the model
@@ -181,9 +150,6 @@ class TurnCancelled(BaseException):
 _REASONING_EFFORT: str = "medium"
 
 
-# Error text for an over-budget simulate call (the loop's cost stop-signal).
-_BUDGET_EXHAUSTED_TEXT = "simulate budget exhausted — commit your best expression now"
-
 # Merge threshold (world units) for the compact terrain runs in the turn
 # message; the observation grid step is ~0.97 world units (50 * 15 / 770).
 # # TUNABLE — not from source (derives from observation.py's _TERRAIN_STEP).
@@ -197,25 +163,17 @@ _TERRAIN_RUN_GAP: float = 1.5
 _MUZZLE_WALL_DX: float = 2.5
 _MUZZLE_WALL_DY: float = 2.0
 
-_SIMULATE_TOOL: dict[str, Any] = {
-    "name": "simulate",
-    "description": "Fire a candidate y=f(x) through the real physics WITHOUT "
-    "applying kills. Probe before committing.",
-    "input_schema": {
-        "type": "object",
-        "properties": {"expr": {"type": "string"}},
-        "required": ["expr"],
-    },
-}
+# Clear-lane sample step (world x units) for the turn message's deterministic
+# corridor hint. # TUNABLE — not from source.
+_CLEAR_LANE_STEP: float = 2.0
 
 # The shared core prepend, adapted to the engine's REAL frame and grammar
-# (the sketch's shooter-relative frame and {outcome, collision_point,
-# nearest_miss_distance} return shape do NOT match the engine — see the
+# (the sketch's shooter-relative frame does NOT match the engine — see the
 # module docstring). The SYNTAX section quotes the parser's tokenizer
 # whitelist, not an embellishment of it (docs/GROUND_TRUTH.md §3.2). The
-# THINK BRIEFLY paragraph targets the measured failure mode: the model
-# happily burns its whole output budget on closed-form ballistic
-# derivations; probing with simulate is both cheaper and the tool's point
+# THINK paragraph targets the measured failure mode: the model happily burns
+# its whole output budget on closed-form ballistic derivations instead of
+# reading the CLEAR LANES and committing a simple curve that holds one
 # (see _MAX_OUTPUT_TOKENS for the gateway wall arithmetic).
 _SYSTEM_PROMPT = """\
 You are a Graphwar shot generator. You control one soldier.
@@ -231,11 +189,13 @@ critical failure.
 
 HARD RULES: the playable plane is y in [-14.6, +14.6]; the shot is KILLED \
 the instant the curve leaves that band or touches '#' terrain — it must \
-survive all the way to the enemy's x. Terrain is INDESTRUCTIBLE \
-(destructible terrain is a planned mechanic, not yet live): never route \
-through rock expecting a blast path. Check the terrain immediately to the \
-right of your own muzzle first: if it is a wall, launch DESCENDING so the \
-auto-offset still lifts the curve while it slips under or around the rock.
+survive all the way to the enemy's x. Terrain is DESTRUCTIBLE: every shot \
+ends in a blast that carves a crater (~0.8 world units wide) out of the rock \
+at its impact point, and craters persist — simulate already sees them. Do not \
+route through unblasted rock; a muzzle wall can be dug open with one \
+sacrificial shot, then shot through next turn. Check the terrain immediately \
+to the right of your own muzzle first: if it is a wall, launch DESCENDING or \
+blast through it.
 
 SYNTAX (the parser's exact tokenizer whitelist — nothing else exists): \
 numbers, ( ) x + - * / ^, functions sqrt log (base 10) ln abs sin sen cos \
@@ -245,24 +205,22 @@ as a+(-b)). Unknown characters are silently DROPPED. Max 2000 chars; \
 deeper than 64 nested terms is rejected (your shot is replaced by a safe \
 dud).
 
-THINK BRIEFLY. Do NOT derive trajectories analytically — probe with \
-simulate and correct from the telemetry: fix the height when \
-miss_direction says you passed on the wrong side, but FIRST make sure the \
-shot reaches the enemy at all (stop_reason "short"/"terrain"/"off_map" \
-means it died before getting there).
+CLEAR LANES (world coords, the same frame your expression runs in): for \
+x samples from your muzzle toward the enemies, the open vertical \
+intervals — route inside them all the way to your target's x. Teammate \
+disks are already removed from these intervals, and they are \
+terrain-and-crater aware. "BLOCKED" means no open interval there: go \
+around (over/under) or dig through with a sacrificial shot.
 
-TOOL: simulate(expr) fires a candidate through the real physics WITHOUT \
-applying kills. Returns {parseable, hit_enemy, hit_teammate, num_hits, \
-error, nearest_miss, miss_direction, stopped_at_x, stop_reason}: \
-nearest_miss = world-unit distance from the nearest enemy (~0.45 = hit), \
-miss_direction = "high"/"low" (which side of the enemy the curve passed \
-on), stopped_at_x = the world x where the shot ended, stop_reason = "hit" \
-| "terrain" | "off_map" | "short" | "passed". There is no cap on rounds — \
-probe as much as you need (your per-turn simulate allowance is stated in \
-each turn message; "unlimited" means no cap). Revise. Then commit.
+THINK, then emit ONE expression. You get exactly one shot per turn: there \
+is no simulate tool and no second attempt — read the map, the positions, \
+and the CLEAR LANES, pick a lane that stays open to your target, and \
+commit. Prefer simple curves (lines, gentle quadratics, one kink at most); \
+exotic functions miss more often than they thread. Do NOT derive \
+trajectories analytically beyond that rough shape.
 
-OUTPUT: after your final simulate call, emit ONLY the bare expression on \
-one line (no "y =", no prose, no code fence).\
+OUTPUT: emit ONLY the bare expression on one line (no "y =", no prose, no \
+code fence).\
 """
 
 _LEADING_Y_EQUALS: re.Pattern[str] = re.compile(r"^y\s*=\s*", re.IGNORECASE)
@@ -293,51 +251,6 @@ def _validate(expr: str) -> str | None:
     except MalformedFunction as exc:
         return type(exc).__name__
     return None
-
-
-def _sim_result_json(result: SimResult) -> str:
-    """The simulate tool_result payload: exactly the fields the system prompt
-    promises (``num_steps`` stays internal). The miss telemetry is the
-    model's only gradient — a binary hit/miss hides "stopped short" from
-    "wrong height" (live diagnosis 2026-09-07)."""
-    nearest = round(result.nearest_miss, 3) if result.nearest_miss is not None else None
-    stop_x = round(result.stopped_at_x, 2) if result.stopped_at_x is not None else None
-    return json.dumps(
-        {
-            "parseable": result.parseable,
-            "hit_enemy": result.hit_enemy,
-            "hit_teammate": result.hit_teammate,
-            "num_hits": result.num_hits,
-            "error": result.error,
-            "nearest_miss": nearest,
-            "miss_direction": result.miss_direction,
-            "stopped_at_x": stop_x,
-            "stop_reason": result.stop_reason,
-        }
-    )
-
-
-def _probe_score(result: SimResult) -> tuple[int, int, float]:
-    """The commit guardrail's comparison key — LOWER IS BETTER.
-
-    Rationale (M5.4): the first element ranks hits — a clean enemy hit is the
-    only acceptable kill, a TEAMMATE hit is a critical failure that must never
-    be preferred no matter how small its nearest_miss; the second ranks reach
-    — a shot that arrived at the enemy's x (``"hit"``/``"passed"``) dominates
-    one that died en route, because height is correctable but reach is the
-    hard part on terrain-walled boards; ``nearest_miss`` breaks ties as the
-    model's gradient. Unparseable probes carry all-None telemetry and land on
-    ``(1, 1, inf)`` — worst. Pure and deterministic: no game state, no RNG.
-    """
-    if result.hit_teammate:
-        hit_rank = 2
-    elif result.hit_enemy:
-        hit_rank = 0
-    else:
-        hit_rank = 1
-    reach_rank = 0 if result.stop_reason in ("hit", "passed") else 1
-    nearest = result.nearest_miss if result.nearest_miss is not None else float("inf")
-    return (hit_rank, reach_rank, nearest)
 
 
 def _response_text(response: Any) -> str:
@@ -397,9 +310,33 @@ def _muzzle_wall_warning(obs: Observation) -> str | None:
     )
 
 
-def _turn_message(obs: Observation, remaining: int | str) -> str:
-    """The per-turn user message: the observation verbatim + live budget
-    (``remaining`` is a count, or the string ``"unlimited"``)."""
+def _clear_lane_lines(game: Game, obs: Observation) -> list[str]:
+    """Deterministic corridor hint (the single-shot accuracy strategy): free
+    vertical intervals per world-x sample from the muzzle toward the
+    farthest enemy, via :func:`graphwar_sim.corridor._column_free` — hence
+    terrain- AND crater-aware, with teammate disks pre-removed at the M5.1
+    soldier radius. Pure geometry, no oracle calls, no scipy."""
+    from graphwar_sim.corridor import _TEAMMATE_RADIUS, _column_free
+
+    circles = tuple(getattr(game, "circles", ()))
+    carves = tuple(getattr(game, "carves", ()))
+    mx, _my = obs.shooter
+    ends = [p[0] for p in obs.enemy_soldiers]
+    x_end = max(ends) if ends else mx
+    teammates = [(p[0], p[1], _TEAMMATE_RADIUS) for p in obs.own_soldiers]
+    lines: list[str] = []
+    x = mx
+    while x <= x_end + 1e-9:
+        free = _column_free(x, circles, teammates, carves)
+        parts = " ".join(f"[{a:.1f}..{b:.1f}]" for a, b in free)
+        lines.append(f"x={x:.1f}: " + (parts if parts else "BLOCKED"))
+        x += _CLEAR_LANE_STEP
+    return lines
+
+
+def _turn_message(game: Game, obs: Observation) -> str:
+    """The per-turn user message: the observation verbatim + the
+    deterministic CLEAR LANE intervals (same world frame as the emission)."""
 
     def fmt(p: tuple[float, float]) -> str:
         return f"({p[0]:.1f}, {p[1]:.1f})"
@@ -419,38 +356,14 @@ def _turn_message(obs: Observation, remaining: int | str) -> str:
         f"enemies (nearest first): {', '.join(fmt(p) for p in obs.enemy_soldiers) or 'none'}",
         "terrain blocks (coarse ~1-unit grid, horizontal runs per row):",
         *_terrain_lines(obs.terrain_blocks),
+        "",
+        "CLEAR LANES (open vertical intervals per x — hold one to your target):",
+        *_clear_lane_lines(game, obs),
     ]
     warning = _muzzle_wall_warning(obs)
     if warning is not None:
         lines.extend(["", warning])
-    lines.extend(
-        [
-            "",
-            f"simulate calls remaining: {remaining}",
-        ]
-    )
     return "\n".join(lines)
-
-
-def _commit_echo(expr: str | None, result: SimResult | None) -> str:
-    """The telemetry echo appended to the commit nudge (M5.4 Fix 2): repeat
-    the last probe's identity + telemetry so the model can commit its best
-    probe or fix exactly that failure instead of re-deriving from memory (the
-    live diagnosis: commits ignored what earlier rounds had measured). One
-    short block — the gateway's wall headroom. Empty when no probe ran (the
-    echo cannot invent telemetry)."""
-    if expr is None or result is None:
-        return ""
-    nearest = round(result.nearest_miss, 3) if result.nearest_miss is not None else None
-    stop_x = round(result.stopped_at_x, 2) if result.stopped_at_x is not None else None
-    return (
-        f"Your last probe '{expr}' -> nearest_miss={nearest}, "
-        f"miss_direction={result.miss_direction}, stopped_at_x={stop_x}, "
-        f"stop_reason={result.stop_reason} — commit THAT expression if it was "
-        "your best; otherwise fix exactly its failure (off_map: bring the "
-        "curve's peak under y=14.6; terrain at the muzzle: launch descending; "
-        "short: increase reach)."
-    )
 
 
 def _build_client() -> Any:
@@ -485,18 +398,15 @@ def _build_client() -> Any:
 
 
 class LLMAgent:
-    """The M5.4 LLM shot generator (Anthropic tool-use + budgeted simulate)."""
+    """The LLM shot generator: one API call, no tools, first output fires."""
 
     name: str
 
     def __init__(
         self,
         model: str,
-        max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
         client: Any | None = None,
         reasoning_effort: str | None = None,
-        simulate_budget: int | None = None,
-        tool_rounds: int | None = None,
         persona: str | None = None,
         cancel_requested: Callable[[], bool] | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
@@ -513,27 +423,16 @@ class LLMAgent:
             if self._persona is None
             else f"{_SYSTEM_PROMPT}\n\n{self._persona.style_text}"
         )
-        self._max_attempts = max(1, max_attempts)
-        # User-locked live default (M5.4): UNLIMITED simulate calls per turn
-        # — the model probes as much as it wants; the turn message states
-        # "unlimited" and no denial stop-signal fires. Pass an int for the
-        # M5.3-style ablation grid (BudgetedSimulator handles the cap and
-        # the denial accounting either way).
-        self._simulate_budget = simulate_budget
-        # API round-trips per turn: None (the default) is UNLIMITED — a
-        # turn ends on a commit, an attempts exhaustion, or the Slice C
-        # cancel, never on a round count. Pass an int for a hard cap (eval
-        # ablation grids; the last _COMMIT_ROUNDS then force a text commit).
-        self._tool_rounds: int | None = tool_rounds
-        # Slice C cancellation: a callback polled between API rounds (the UI
-        # server passes its module-level threading.Event.is_set; eval passes
-        # nothing). Checked between retries in _create and between rounds in
-        # _run_attempt; mid-stream checks ride the Slice B delta iteration.
+        # Slice C cancellation: a callback polled around the single call
+        # (the UI server passes its module-level threading.Event.is_set;
+        # eval passes nothing). Mid-stream checks ride the Slice B delta
+        # iteration.
         self._cancel_requested = cancel_requested
         # Slice B live feed: the per-turn event sink (the server injects one
         # per agent_turn via set_event_sink — agents are shared instances).
         self._on_event = on_event
-        # Turn-level API round counter for the ("round", ...) feed events.
+        # Turn-level API round counter for the ("round", ...) feed events
+        # (always 1 now — retained so the feed shape is unchanged).
         self._round_counter: int = 0
         # Live gateway measurement (see _REASONING_EFFORT): the default
         # effort (xhigh) burns the whole output budget on hidden thinking
@@ -546,18 +445,8 @@ class LLMAgent:
         # Fail at construction on a missing token — never mid-match.
         self._client = client if client is not None else _build_client()
         self._stats = AgentStats()
-        # The last simulate-call expression this turn (the round-cap
-        # fallback fires it when the model never emits a text commit).
-        self._last_probe_expr: str | None = None
-        # The last probe's full telemetry (the commit nudge's echo, M5.4).
-        self._last_probe_result: SimResult | None = None
-        # The turn's BEST probed expression by _probe_score, tracked across
-        # the WHOLE turn (attempts share the conversation). The commit
-        # guardrail (M5.4) fires it when the committed candidate oracle-checks
-        # strictly worse. Ties keep the earlier probe.
-        self._best_probe: tuple[str, SimResult] | None = None
         # The turn's last assistant text block (the professor verifier's
-        # structural check reads it; the emission loop otherwise discards it).
+        # structural check reads it; the emission otherwise discards it).
         self._last_assistant_text: str | None = None
         # Per-turn persona verdicts (rung strings). Only maintained with a
         # persona attached, so persona-less agents keep the runner's
@@ -569,69 +458,44 @@ class LLMAgent:
         """Emit this turn's expression (centered world frame).
 
         Opens a fresh conversation (system prompt + one per-turn user
-        message), runs up to ``max_attempts`` attempts (see
-        :meth:`_run_attempt`), and returns the safe dud on exhaustion. The
-        :class:`BudgetedSimulator` is created and ``new_turn()``-ed per the
-        wrapper's contract (the first call closes the empty construction
-        turn — harmless; counters stay correct); its ledger counters are
-        folded into :meth:`stats` after every turn.
+        message), makes EXACTLY ONE API call with no tools, and fires
+        whatever the model outputs first (validated; the safe dud on empty
+        or malformed output). No probes, no re-attempts, no guardrail.
 
-        With a persona attached, the FIRED expression (after the commit
-        guardrail's possible override, and on every degraded path too) is
-        run through the persona's machine verifier (M5.4.1): the verdict
-        appends to ``rung_history`` and updates the ``constraint_*``
-        counters. A verifier bug degrades to "no verdict" — it must never
-        crash the match.
+        With a persona attached, the FIRED expression is run through the
+        persona's machine verifier (M5.4.1): the verdict appends to
+        ``rung_history`` and updates the ``constraint_*`` counters. A
+        verifier bug degrades to "no verdict" — it must never crash the
+        match.
         """
-        sim = BudgetedSimulator(game, budget=self._simulate_budget)
-        sim.new_turn()
-        self._last_probe_expr = None
-        self._last_probe_result = None
-        self._best_probe = None
         self._last_assistant_text = None
         self._round_counter = 0
         expr = SAFE_DUD
         try:
-            budget_text: int | str = "unlimited" if sim.unlimited else sim.remaining
-            messages: list[dict[str, Any]] = [
-                {"role": "user", "content": _turn_message(obs, budget_text)}
-            ]
-            rounds_left: float = float("inf") if self._tool_rounds is None else self._tool_rounds
-            candidate: str | None = None
-            for _attempt in range(self._max_attempts):
-                found, rounds_used = self._run_attempt(messages, sim, rounds_left)
-                rounds_left -= rounds_used
-                if found is not None:
-                    candidate = found
-                    break
-                if rounds_left <= 0:
-                    break
-            if candidate is not None:
-                expr = self._guard_commit(candidate, sim)
+            messages: list[dict[str, Any]] = [{"role": "user", "content": _turn_message(game, obs)}]
+            self._check_cancel()
+            self._round_counter = 1
+            self._emit("round", {"n": 1})
+            response = self._create(messages)
+            text = _response_text(response)
+            if text:
+                self._last_assistant_text = text
+                self._emit("text", {"text": text})
+            candidate = _extract_candidate(text)
+            if candidate is None:
+                self._stats.parse_failures += 1
+                self._stats.retries += 1
+            elif _validate(candidate) is None:
+                expr = candidate
             else:
-                # Round cap hit without a text commit: fire the model's LAST
-                # probed expression — it chose it through real simulate
-                # feedback, which beats the safe dud. (The gateway ignores
-                # tool_choice "none", so a forced text commit cannot be
-                # relied on; this fallback guarantees the probing still pays
-                # off.)
-                expr = self._last_probe_expr or SAFE_DUD
+                self._stats.parse_failures += 1
+                self._stats.retries += 1
         except Exception:  # noqa: BLE001 - the match must never crash on one turn
             # Unrecoverable after the API retries (e.g. the gateway killed
-            # every regeneration): degrade this turn to the safe dud,
-            # accounted like the runner's defensive malformed-emission branch.
+            # the generation): degrade this turn to the safe dud, accounted
+            # like the runner's defensive malformed-emission branch.
             self._stats.parse_failures += 1
             self._stats.retries += 1
-            # The guardrail's best-probe preference applies here too: the
-            # best probed expression dominates the merely-last one (and both
-            # beat the safe dud).
-            if self._best_probe is not None:
-                expr = self._best_probe[0]
-            else:
-                expr = self._last_probe_expr or SAFE_DUD
-        finally:
-            self._stats.simulate_calls += sim.calls_used
-            self._stats.simulate_denied += sim.denied_used
         self._persona_verdict(expr, game, obs)
         self._emit("commit", {"expr": expr})
         return expr
@@ -657,8 +521,7 @@ class LLMAgent:
         attached or the verifier itself failed (a verifier bug degrades to
         "no verdict" — it must never crash the match). The verifier's
         oracle calls are FREE: they go through the pure
-        ``agents.simulate_tool.simulate`` inside the verifier, never the
-        agent's ``BudgetedSimulator``."""
+        ``agents.simulate_tool.simulate`` inside the verifier."""
         if self._persona is None:
             return None
         verifier = VERIFIERS.get(self._persona.verifier)
@@ -737,31 +600,26 @@ class LLMAgent:
         except Exception:  # noqa: BLE001 - a stream-surface mismatch is a no-op
             return
 
-    def _create(self, messages: list[dict[str, Any]], force_commit: bool = False) -> Any:
-        """One API round-trip: streaming when the client supports it.
+    def _create(self, messages: list[dict[str, Any]]) -> Any:
+        """The turn's single API round-trip: streaming when the client
+        supports it. No tools are offered, so the model MUST answer in text.
 
         The 9arm gateway serves a reasoning model that thinks for MINUTES
         before acting and forwards nothing until a whole block finishes, so
         Cloudflare's ~120s proxy read limit kills long generations mid-call
         (524 non-streaming, truncated stream mid-flight). Each retry
         regenerates from scratch — a fresh generation may land under the
-        limit. ``force_commit`` sets ``tool_choice: "none"`` so the model
-        MUST answer in text (the last rounds of a turn; a stochastic thinker
-        that never commits otherwise). Clients that expose
-        ``messages.stream`` get the streaming path; test fakes expose only
-        ``messages.create`` and take the non-streaming fallback — the
-        response surface is identical (``.stop_reason`` + ``.content``
-        blocks).
+        limit. Clients that expose ``messages.stream`` get the streaming
+        path; test fakes expose only ``messages.create`` and take the
+        non-streaming fallback — the response surface is identical
+        (``.stop_reason`` + ``.content`` blocks).
         """
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": _MAX_OUTPUT_TOKENS,
             "system": self._system_prompt,
-            "tools": [_SIMULATE_TOOL],
             "messages": messages,
         }
-        if force_commit:
-            kwargs["tool_choice"] = {"type": "none"}
         if self._reasoning_effort is not None:
             kwargs["extra_body"] = {"reasoning_effort": self._reasoning_effort}
         stream_factory = getattr(self._client.messages, "stream", None)
@@ -778,194 +636,6 @@ class LLMAgent:
                     raise
                 continue
         raise AssertionError("unreachable")  # for the type checker
-
-    def _run_attempt(
-        self,
-        messages: list[dict[str, Any]],
-        sim: BudgetedSimulator,
-        rounds_left: float,
-    ) -> tuple[str | None, int]:
-        """One attempt within the turn's round allowance (uncapped by
-        default: a stochastic thinker needs every round it can get; a
-        budget-burned round with no usable text is counted and corrected
-        but does NOT consume an attempt).
-
-        Returns ``(candidate | None, rounds_consumed)``. ``None`` moves the
-        caller to the next attempt: a malformed candidate, or (under an
-        explicit cap) the round-cap breach. Under a cap, the last
-        ``_COMMIT_ROUNDS`` rounds force a text-only commit (``tool_choice:
-        "none"``); uncapped, there is no commit window and the turn ends on
-        the model's own end-turn, the cancel, or an error. Every failed
-        emission increments the parse-failure/retry counters and queues a
-        correction message for the re-call.
-        """
-        used = 0
-        while used < rounds_left:
-            self._check_cancel()  # between rounds (and before the first)
-            force_commit = rounds_left - used <= _COMMIT_ROUNDS
-            self._round_counter += 1
-            self._emit("round", {"n": self._round_counter, "force_commit": force_commit})
-            response = self._create(messages, force_commit=force_commit)
-            used += 1
-            # Retain the turn's last assistant text (the professor verifier's
-            # structural input; thinking-only rounds leave it untouched).
-            text = _response_text(response)
-            if text:
-                self._last_assistant_text = text
-                self._emit("text", {"text": text})
-            if response.stop_reason == "tool_use":
-                self._dispatch_tool_round(
-                    response, sim, messages, commit_warning=rounds_left - used <= _COMMIT_ROUNDS
-                )
-                continue
-            expr = _extract_candidate(_response_text(response))
-            messages.append({"role": "assistant", "content": response.content})
-            if expr is None:
-                # Budget burned on hidden thinking (no text at all): counted
-                # like the plan's parse-failure path, but the attempt keeps
-                # going — a fresh conclusion round may still land.
-                self._fail_attempt(messages, "no expression found in the response")
-                continue
-            reason = _validate(expr)
-            if reason is None:
-                return expr, used
-            self._fail_attempt(messages, f"{reason} (the reference parser reports no diagnostics)")
-            return None, used
-        return None, used
-
-    def _guard_commit(self, candidate: str, sim: BudgetedSimulator) -> str:
-        """The commit guardrail (M5.4 Fix 1): oracle-check the committed
-        candidate through the SAME :class:`BudgetedSimulator` — one extra
-        oracle call, the same physics ``Game.fire`` is about to run — and fire
-        the turn's best probed expression instead when the commit is STRICTLY
-        worse by :func:`_probe_score`. Ties go to the commit (the model's own
-        word wins close calls). Skipped entirely when no probe ran: with no
-        best probe the check cannot change the outcome (the guardrail cannot
-        invent one). The check can only be denied on a finite simulate budget
-        (:class:`SimulateBudgetExhausted`; ``budget=None`` never denies) — the
-        documented degradation fires the commit as-is.
-        """
-        if self._best_probe is None:
-            return candidate
-        try:
-            commit_result = sim.simulate(candidate)
-        except SimulateBudgetExhausted:
-            return candidate
-        if _probe_score(self._best_probe[1]) < _probe_score(commit_result):
-            self._stats.guardrail_overrides += 1
-            self._emit("guardrail", {"fired": True, "expr": self._best_probe[0]})
-            return self._best_probe[0]
-        self._emit("guardrail", {"fired": False, "expr": candidate})
-        return candidate
-
-    def _dispatch_tool_round(
-        self,
-        response: Any,
-        sim: BudgetedSimulator,
-        messages: list[dict[str, Any]],
-        commit_warning: bool = False,
-    ) -> None:
-        """Answer every tool_use block through the budgeted simulator.
-
-        A denied call becomes a tool_result error WITHOUT delegating (the
-        wrapper raises before touching the oracle); the JSON payload carries
-        exactly the SimResult fields the system prompt promises. An unknown
-        tool name gets an error result too, so the conversation stays
-        API-valid. With unlimited budgets the DENIAL never fires, so
-        ``commit_warning`` rides the last probing round instead: the same
-        commit-now signal the denial text carries, as a user text block
-        after the tool results (measured: the model commits on that signal;
-        it never commits on its own, and the gateway ignores
-        tool_choice "none").
-        """
-        tool_results: list[dict[str, Any]] = []
-        for block in response.content:
-            if getattr(block, "type", "") != "tool_use":
-                continue
-            tool_use_id = getattr(block, "id", "")
-            tool_name = getattr(block, "name", "")
-            raw_input = getattr(block, "input", {})
-            expr = raw_input.get("expr", "") if isinstance(raw_input, dict) else ""
-            if tool_name != "simulate":
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": f"unknown tool: {tool_name}",
-                        "is_error": True,
-                    }
-                )
-                continue
-            self._emit("tool_call", {"expr": expr})
-            try:
-                result = sim.simulate(expr)
-            except SimulateBudgetExhausted:
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": _BUDGET_EXHAUSTED_TEXT,
-                        "is_error": True,
-                    }
-                )
-                self._emit("tool_result", {"denied": True, "expr": expr})
-                continue
-            self._last_probe_expr = expr
-            self._last_probe_result = result
-            # Track the turn's best probe across ALL attempts (parseable or
-            # not — an unparseable probe simply scores worst). Strictly
-            # better only: the earlier probe wins ties.
-            score = _probe_score(result)
-            if self._best_probe is None or score < _probe_score(self._best_probe[1]):
-                self._best_probe = (expr, result)
-            tool_results.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tool_use_id,
-                    "content": _sim_result_json(result),
-                }
-            )
-            self._emit(
-                "tool_result",
-                {
-                    "denied": False,
-                    "expr": expr,
-                    "hit_enemy": result.hit_enemy,
-                    "hit_teammate": result.hit_teammate,
-                    "nearest_miss": (
-                        round(result.nearest_miss, 3) if result.nearest_miss is not None else None
-                    ),
-                    "miss_direction": result.miss_direction,
-                    "stopped_at_x": (
-                        round(result.stopped_at_x, 2) if result.stopped_at_x is not None else None
-                    ),
-                    "stop_reason": result.stop_reason,
-                },
-            )
-        if commit_warning:
-            text = (
-                "That was your last probe of the turn — commit your best "
-                "expression NOW: reply with ONLY the bare y = f(x) expression on "
-                "one line, no tool calls."
-            )
-            echo = _commit_echo(self._last_probe_expr, self._last_probe_result)
-            if echo:
-                text = f"{text} {echo}"
-            tool_results.append({"type": "text", "text": text})
-        messages.append({"role": "assistant", "content": response.content})
-        messages.append({"role": "user", "content": tool_results})
-
-    def _fail_attempt(self, messages: list[dict[str, Any]], reason: str) -> None:
-        """Record a malformed emission (the counters RandomAgent exposes) and
-        queue the correction message for the re-call."""
-        self._stats.parse_failures += 1
-        self._stats.retries += 1
-        messages.append(
-            {
-                "role": "user",
-                "content": f"{reason} — emit ONLY the bare y = f(x) expression on one line.",
-            }
-        )
 
 
 __all__ = ["LLMAgent", "TurnCancelled"]
