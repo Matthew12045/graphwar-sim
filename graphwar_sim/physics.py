@@ -112,6 +112,12 @@ class ShotResult:
       soldier struck, in the order first hit.
     - ``last_x`` / ``last_y``: the final point in plane coords (Function.java:301-302).
     - ``num_steps``: number of integrated points (Function.java:211, 237-297).
+    - ``stop``: termination cause, recorded at the existing break points
+      (integration math byte-identical — record only, never alters stepping):
+      ``"terrain"`` (rock pixel), ``"oob"`` (out-of-bounds plane coords —
+      ``collide_point`` returns True there too, so the break site checks the
+      bounds explicitly), ``"nan"`` (non-finite curve value), ``"steps"``
+      (adaptive step-halving floor or step exhaustion).
     """
 
     points: list[tuple[float, float]] = field(default_factory=list)
@@ -119,6 +125,7 @@ class ShotResult:
     last_x: float = 0.0
     last_y: float = 0.0
     num_steps: int = 0
+    stop: str = "steps"
 
 
 def _to_plane_x(values_x: float) -> float:
@@ -237,6 +244,11 @@ def process_function_range(
     soldiers_hit: list[int] = []
     hit_positions: list[int] = []
 
+    # Termination cause (record-only telemetry; the stepping below is
+    # byte-identical to the faithful port). Default covers loop exhaustion
+    # (``num_steps`` stays ``FUNC_MAX_STEPS`` when no break fires).
+    stop = "steps"
+
     def player_already_hit(player: int, soldier: int) -> bool:
         for i in range(len(players_hit)):
             if players_hit[i] == player and soldiers_hit[i] == soldier:
@@ -295,10 +307,18 @@ def process_function_range(
         # never raise; Python's int() does, on a NaN y from f.evaluate. The
         # cast is replicated so a NaN step takes the same path as the JVM
         # (collide_point(0, 0), then the NaN check below terminates).
+        # ``collide_point`` is True out-of-bounds as well as on rock, so the
+        # break site distinguishes them explicitly (unrecoverable after).
         if obstacle.collide_point(_java_int_cast(x), _java_int_cast(y)):
+            ix, iy = _java_int_cast(x), _java_int_cast(y)
+            if ix < 0 or ix >= config.PLANE_LENGTH or iy < 0 or iy >= config.PLANE_HEIGHT:
+                stop = "oob"
+            else:
+                stop = "terrain"
             num_steps = i
             break
         if math.isnan(y) or math.isinf(y):
+            stop = "nan"
             num_steps = i
             break
 
@@ -323,4 +343,5 @@ def process_function_range(
         last_x=last_x,
         last_y=last_y,
         num_steps=num_steps,
+        stop=stop,
     )

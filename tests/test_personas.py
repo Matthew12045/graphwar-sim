@@ -110,7 +110,11 @@ def test_style_texts_are_adapted_to_the_real_frame() -> None:
         assert "MAX_LENGTH" not in text
         assert "BLAST_RADIUS" not in text
         assert "min_dy" not in text
-        assert "simulate" in text
+        # The agent is one-shot with no tools (llm_agent core prompt): no
+        # style text may order simulate()/telemetry/budget reads — the exact
+        # failure the old shared-core adaptation fixed.
+        for stale in ("simulate", "telemetry", "budget"):
+            assert stale not in text.lower(), f"{spec.id} still references {stale}"
 
 
 def test_curve_personas_quote_parser_legal_syntax() -> None:

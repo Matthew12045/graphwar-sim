@@ -55,7 +55,9 @@ certified-scipy LPs run lazily, only when reached (the ladder is a generator):
 4. ``fixed_grid_gaussian`` — a fixed uniform grid of centres (the plan's named
    primary; it underperforms on the seeded maps — the documented divergence,
    and on death row behind CCF).
-5. ``dud`` — a deliberate safe dud that hits nothing (never crashes).
+5. ``wall_climb`` — flat-launch obstacle clearers (climb kinks + delayed
+   sigmoids aimed at the climb point past the muzzle wall).
+6. ``dud`` — a deliberate safe dud that hits nothing (never crashes).
 
 Acceptance rule (one-shot max-kill)
 -----------------------------------
@@ -65,13 +67,16 @@ break integration; the hit test is strict ``< SOLDIER_RADIUS=7``, deduped).
 ``solve`` walks the ladder in order, rejects any teammate grazer, returns
 immediately on a perfect shot (``kills == n_targets`` — for ``n_targets == 1``
 this reproduces first-hit behavior exactly), otherwise keeps the first
-candidate with strictly more kills than any earlier one (strict ``>``: ladder
-order is the deterministic tie-break) and fires it after the ladder
-exhausts. Only zero-hit-anywhere falls to the rotated duds. The corridor
-pre-check and dig path are unchanged: a corridor-blocked board cannot
-kill-all until dug open. ``SolverResult.kills`` carries the fired shot's
-enemy kills (``notes`` appends ``kills=k/n``); ``rung`` still records the
-producing rung (no new rung).
+candidate with strictly more kills than any earlier one and, among verified
+equal-kill shots, the one with the larger pre-first-kill rock clearance
+(strict ``>`` on both: ladder order is the deterministic tie-break within
+exact ties; kills always dominate) and fires it after the ladder exhausts.
+Only zero-hit-anywhere falls to the rotated duds (ranked: a lucky hit, then
+an off-map / rock-sparing exit, then rotation order). The corridor pre-check
+and dig path are unchanged: a corridor-blocked board cannot kill-all until
+dug open. ``SolverResult.kills`` carries the fired shot's enemy kills
+(``notes`` appends ``kills=k/n``); ``rung`` still records the producing
+rung.
 
 Emission note: numeric literals are emitted as plain decimals (``_num``),
 never scientific notation — the parser's ``-``→``+-`` rewrite would corrupt
@@ -124,6 +129,11 @@ RUNG_PER_TARGET = "per_target_gaussian"
 RUNG_FIXED_GRID = "fixed_grid_gaussian"
 RUNG_LINE = "line"
 RUNG_PARABOLA = "parabola"
+# Obstacle-clearing rung (this plan): flat-launch curves that thread the
+# muzzle wall, then maneuver past mid-field rock — placed AFTER every cheaper
+# kill-seeking rung (kills-first: it only wins turns the old ladder scored
+# 0–partial on), BEFORE duds/dig.
+RUNG_WALL = "wall_climb"
 # 5.2.md §1 ladder placement: CCF sits between line and fixed_grid_gaussian.
 RUNG_CCF = "ccf"
 RUNG_ARC = "arc"
@@ -526,6 +536,179 @@ def _arc_grid() -> list[float]:
     return [_ARC_A_MIN + i * _ARC_A_STEP for i in range(n + 1)]
 
 
+# --- Obstacle-clearing rung (flat-launch wall climbers) ----------------------
+# Families chosen by the Task-2 probe on first-turn SOLVER_FAILED seeds
+# (2v2 seeds 2/18/23/27): every secant-slope shape dies on the muzzle wall
+# within ~60 steps, while flat-launch + delayed-maneuver shapes survive
+# 800–1500 steps and thread it. Findings baked in here:
+#
+# - The killer is the muzzle wall (rock in the first 1–9 world units), NOT
+#   the widest mid-field blocker: over/under variants aimed at the widest
+#   blocker all die early because their secant-slope launch crosses
+#   near-muzzle rock first. The maneuver centre goes at the CLIMB POINT
+#   (where open space reappears past the wall), never at the blocker.
+# - Launch slope must hold the muzzle sliver: both shapes below launch flat
+#   by construction (the kink's ``m == a`` cancels the corner's left slope;
+#   the sigmoid/bump tails are ~0 at the muzzle).
+# - Pole families are disqualified inside the span (mid-span poles die at
+#   the asymptote; near-vertical segments trip the step-halving floor or
+#   exit via the saturating int cast). Cube-root-via-``^`` of a negative
+#   base is NaN per the parser's Java ``Math.pow`` semantics, so no
+#   ``(x-c)^(1/3)`` variants: only shapes legal for all ``x >= mx``.
+# - Plateaus sit at the enemy height (in-band by construction — enemies are
+#   always inside the plane), so over-variants cannot band-exit at the top.
+# Every candidate still passes through the ``_verify`` oracle before
+# selection: a bad placement just loses.
+#
+# Under-pairing falls out of the sign of ``ty - my`` (descending targets
+# get descending maneuvers). A true dip-under (below a blocker, then back
+# up — non-monotone in height) needs two maneuvers and is out of scope.
+
+# Maneuver-centre scan step (world units) and the free-interval height that
+# counts as "open space past the wall". # TUNABLE — not from source.
+_WALL_SCAN_STEP: float = 0.5
+_WALL_OPEN_HEIGHT: float = 2.0
+# Sigmoid steepness sweep (steeper first: it holds the plateau longer and
+# clips less). # TUNABLE — not from source.
+_WALL_SIGMOID_B: tuple[float, ...] = (1.0, 0.5)
+# Bound on ``|σ(1-σ)(1-2σ)|`` over [0,1] (attained at u=(1±1/√3)/2), so the
+# sigmoid ``c·σ(b(x-k))`` has ``|f''| ≤ |c|·b²/(6√3)``.
+_SIGMOID_CURVE: float = 6.0 * math.sqrt(3.0)
+
+
+def _x_minus(c: float) -> str:
+    """Emit ``x - c`` folding a negative centre's sign (cf.
+    :func:`emission.gauss_term`: a negative centre must not double-negate
+    under the parser's ``-`` → ``+-`` rewrite)."""
+    return f"x-({_num(c)})" if c >= 0 else f"x+({_num(-c)})"
+
+
+def _frame_rock(
+    frame: _Frame,
+) -> tuple[tuple[tuple[int, int, int], ...], tuple[tuple[int, int, int], ...]]:
+    """Rock circles/carves in the shooter-facing frame (the TEAM2 mirror
+    applied once, exactly like ``corridor.sweep_target``)."""
+    if frame.inverted:
+        mirc = tuple((config.PLANE_LENGTH - cx, cy, r) for cx, cy, r in frame.circles)
+        mcarv = tuple((config.PLANE_LENGTH - cx, cy, r) for cx, cy, r in frame.carves)
+        return mirc, mcarv
+    return frame.circles, frame.carves
+
+
+def _wall_end(
+    mcirc: tuple[tuple[int, int, int], ...],
+    mcarv: tuple[tuple[int, int, int], ...],
+    mx: float,
+    tx: float,
+) -> float | None:
+    """First column past the muzzle whose free set holds an interval of
+    height ≥ ``_WALL_OPEN_HEIGHT`` (rock-only: teammate disks are the
+    oracle's call, not the blocker's). ``None`` when the whole span stays
+    narrow (a full-height wall — undiggable by flight, stays a dig)."""
+    from .corridor import _column_free
+
+    wx = mx
+    while wx < tx:
+        free = _column_free(wx, mcirc, (), mcarv)
+        if any(hi - lo >= _WALL_OPEN_HEIGHT for lo, hi in free):
+            return wx
+        wx += _WALL_SCAN_STEP
+    return None
+
+
+def _wall_candidates(frame: _Frame) -> list[_Candidate]:
+    """Flat-launch wall climbers, one maneuver per target (RUNG_WALL).
+
+    Per target (nearest first): maneuver centres at the wall end (when
+    strictly inside the span) plus span fractions; per centre a climb kink
+    (``m == a`` flat launch, ``m_bound = 0``) and delayed sigmoids
+    (endpoint-exact ``c``, plateau at the enemy height). Deterministic, no
+    RNG.
+    """
+    mcirc, mcarv = _frame_rock(frame)
+    mx, my = frame.mx, frame.my
+    cands: list[_Candidate] = []
+    for tx, ty in sorted(frame.targets, key=lambda p: p[0]):
+        span = tx - mx
+        if abs(span) < 1e-9:
+            continue
+        ks: list[float] = []
+        end = _wall_end(mcirc, mcarv, mx, tx)
+        if end is not None:
+            ks.append(end)
+        ks.extend((mx + 0.25 * span, mx + 0.45 * span))
+        # Plateau-step second corners (downrange of the first): pairs
+        # (k1, k2) with k1 at the wall end and k2 at span fractions.
+        k2s = (mx + 0.6 * span, mx + 0.8 * span)
+        seen: set[float] = set()
+        for k in ks:
+            if not (mx + 0.3 < k < tx - 0.3):
+                continue
+            key = round(k, 2)
+            if key in seen:
+                continue
+            seen.add(key)
+            # Climb kink ``m*x + a*|x-k|``: left of the corner the slope is
+            # ``m - a`` (``k > mx``), so ``m == a`` launches flat through
+            # the muzzle sliver, then corners up at the climb point. The
+            # auto-offset constraint fixes ``a = (ty-my)/(2(tx-k))``.
+            a = (ty - my) / (2.0 * (tx - k))
+            if math.isfinite(a) and abs(a) < 1e9:
+                cands.append(
+                    _Candidate(
+                        expression=f"({_num(a)})*x+({_num(a)})*abs({_x_minus(k)})",
+                        rung=RUNG_WALL,
+                        m_bound=0.0,
+                    )
+                )
+            # Delayed sigmoid ``c/(1+e^(-b(x-k)))``: tails are ~0 at the
+            # muzzle (flat launch) and ~c downrange; ``c`` is solved
+            # endpoint-exact through the enemy.
+            for b in _WALL_SIGMOID_B:
+                try:
+                    s_tx = 1.0 / (1.0 + math.exp(-b * (tx - k)))
+                    s_mx = 1.0 / (1.0 + math.exp(-b * (mx - k)))
+                except OverflowError:
+                    continue
+                d = s_tx - s_mx
+                if abs(d) < 1e-9:
+                    continue
+                c = (ty - my) / d
+                if not math.isfinite(c) or abs(c) >= 1e9:
+                    continue
+                m = abs(c) * b * b / _SIGMOID_CURVE
+                if not math.isfinite(m):
+                    continue
+                cands.append(
+                    _Candidate(
+                        expression=f"({_num(c)})/(1+e^(-{_num(b)}*({_x_minus(k)})))",
+                        rung=RUNG_WALL,
+                        m_bound=m,
+                    )
+                )
+            # Plateau step ``a*|x-k1| - a*|x-k2|`` (k1 = this corner): flat
+            # plateaus outside (launch slope 0, right plateau at the enemy
+            # height) with a linear ramp between — the piecewise-linear
+            # sigmoid. Covers wall + second maneuver when the ramp threads
+            # both (``a = (ty-my)/(2(k2-k1))`` via the auto-offset).
+            for k2 in k2s:
+                if not (k + 0.5 < k2 < tx - 0.3):
+                    continue
+                a2 = (ty - my) / (2.0 * (k2 - k))
+                if not math.isfinite(a2) or abs(a2) >= 1e9:
+                    continue
+                cands.append(
+                    _Candidate(
+                        expression=(
+                            f"({_num(a2)})*abs({_x_minus(k)})+({_num(-a2)})*abs({_x_minus(k2)})"
+                        ),
+                        rung=RUNG_WALL,
+                        m_bound=0.0,
+                    )
+                )
+    return cands
+
+
 def _ccf_candidates(frame: _Frame) -> list[_Candidate]:
     """CCF rung candidates (5.2.md §1/§6-§9): certified-corridor-fit shots."""
     from . import ccf  # local import: scipy is heavy and CCF fires mid-ladder only
@@ -732,10 +915,11 @@ def _ordered_candidates(frame: _Frame) -> Iterator[_Candidate]:
 
     Ladder order per 5.2.md §1: ``per_target_gaussian`` (×``_B_WIDTHS``) ->
     ``parabola`` -> ``line`` -> ``ccf`` -> ``fixed_grid_gaussian`` ->
-    ``arc``. The multi-target Gaussian rungs lead (the plan's intended primary
+    ``arc`` -> ``wall_climb``. The multi-target Gaussian rungs lead (the plan's intended primary
     basis, and the only rung that can multi-kill), then the closed-form
     single-target rungs, then the M5.2 CCF rung, then the plan's named
-    fixed-grid basis, and finally the terrain-aware arc sweep.
+    fixed-grid basis, and finally the terrain-aware arc sweep and the
+    obstacle-aware wall climbers.
 
     The ``ccf`` rung sits between ``line`` and ``fixed_grid_gaussian``, which
     is now on death row — it exists only until CCF beats it on the same seeds
@@ -762,12 +946,18 @@ def _ordered_candidates(frame: _Frame) -> Iterator[_Candidate]:
     cand = _fixed_grid_gaussians(frame, _B_WIDTHS[0])
     if cand is not None:
         yield cand
-    # The terrain-aware arc sweep is the last real attempt to hit something:
-    # it only runs on the maps where every cheaper rung failed to land a shot
-    # (i.e. would otherwise dud), so its per-candidate integration cost is paid
-    # only there. It generalises the parabola rung by sweeping curvature so the
-    # curve can clear terrain (see docs/OPEN_QUESTIONS.md).
+    # The terrain-aware arc sweep is the last generic attempt to hit
+    # something: it only runs on the maps where every cheaper rung failed to
+    # land a shot (i.e. would otherwise dud), so its per-candidate
+    # integration cost is paid only there. It generalises the parabola rung
+    # by sweeping curvature so the curve can clear terrain
+    # (see docs/OPEN_QUESTIONS.md).
     yield from _arc_candidates(frame)
+    # The obstacle-aware wall climbers run dead last among kill-seeking
+    # rungs (kills-first: they only win turns the whole older ladder scored
+    # 0–partial on). Their flat launch threads muzzle walls the secant-slope
+    # families structurally cannot (see _wall_candidates).
+    yield from _wall_candidates(frame)
 
 
 # --- Self-verification (the simulator is the oracle) ------------------------
@@ -801,6 +991,53 @@ def _verify(game: Game, frame: _Frame, cand: _Candidate) -> tuple[int, bool, Sho
     return enemy_kills, hit_any_teammate, result
 
 
+# --- Clearance margin (equal-kill tie-break) ---------------------------------
+
+
+def _clearance(
+    frame: _Frame,
+    result: ShotResult,
+    mcirc: tuple[tuple[int, int, int], ...],
+    mcarv: tuple[tuple[int, int, int], ...],
+) -> float:
+    """Pre-first-kill rock clearance of a verified shot (world units).
+
+    The min over subsampled trajectory points (up to the first hit) of the
+    distance to the nearest blocked edge in the rock-only free set
+    (``corridor._column_free`` margins — exact w.r.t. the crisp pixel grid;
+    teammate disks excluded: this is terrain cleanliness, not safety).
+    Points inside rock / off-map score 0. Deterministic, no RNG. Kills
+    always compare first — this only orders verified equal-kill shots.
+    """
+    from .corridor import _column_free
+
+    points = result.points
+    if not points:
+        return 0.0
+    end = len(points)
+    if result.hits:
+        end = min(int(pos) + 1 for _, _, pos in result.hits)
+        end = max(1, min(end, len(points)))
+    step = max(1, end // 40)
+    worst = math.inf
+    for i in range(0, end, step):
+        px, py = points[i]
+        if frame.inverted:
+            px = config.PLANE_LENGTH - px
+        wx = config.PLANE_GAME_LENGTH * (px - config.PLANE_LENGTH / 2.0) / config.PLANE_LENGTH
+        wy = config.PLANE_GAME_LENGTH * (-py + config.PLANE_HEIGHT / 2.0) / config.PLANE_LENGTH
+        margin = 0.0
+        for lo, hi in _column_free(wx, mcirc, (), mcarv):
+            if lo <= wy <= hi:
+                margin = min(wy - lo, hi - wy)
+                break
+        if margin < worst:
+            worst = margin
+            if worst <= 0.0:
+                break
+    return worst if math.isfinite(worst) else 0.0
+
+
 # --- Public API --------------------------------------------------------------
 
 
@@ -830,7 +1067,8 @@ def solve(game: Game) -> SolverResult:
        the rotated duds → ``RUNG_SOLVER_FAILED``.
     3. If the ladder exhausts on a *reachable* map with no hit anywhere,
        return a rotated safe dud classified ``RUNG_SOLVER_FAILED`` (a fit
-       gap, distinct from unreachable).
+       gap, distinct from unreachable), ranked hit > off-map-or-sparing >
+       rotation order among verified no-friendly-fire variants.
 
     :func:`solve` always returns a parseable expression and never raises for a
     well-formed :class:`Game`. Deterministic in the game state (no RNG): dud
@@ -859,9 +1097,11 @@ def solve(game: Game) -> SolverResult:
             # gap). Fall through to the ladder rather than misclassify the
             # turn (recorded in OPEN_QUESTIONS if it ever fires).
     n_targets = len(frame.targets)
+    mcirc, mcarv = _frame_rock(frame)
     best: _Candidate | None = None
     best_result: ShotResult | None = None
     best_kills = 0
+    best_clear = 0.0
     for cand in _ordered_candidates(frame):
         enemy_kills, hit_teammate, result = _verify(game, frame, cand)
         if hit_teammate:
@@ -872,17 +1112,46 @@ def solve(game: Game) -> SolverResult:
             best = cand
             best_result = result
             best_kills = int(enemy_kills)
+            best_clear = _clearance(frame, result, mcirc, mcarv) if enemy_kills > 0 else 0.0
+        elif enemy_kills == best_kills and enemy_kills > 0:
+            # Equal kills: prefer the cleaner pre-kill path (larger rock
+            # clearance). Strict ``>`` keeps ladder order on exact ties;
+            # kills still dominate (this branch never fires across counts).
+            clear = _clearance(frame, result, mcirc, mcarv)
+            if clear > best_clear:
+                best = cand
+                best_result = result
+                best_clear = clear
     if best is not None and best_result is not None:
         return _make_result(best, best_result, frame, kills=best_kills)
     # Ladder exhausted with zero enemy hits on a reachable (or
     # corridor-unchecked) map: a solver gap, distinct from an unreachable
-    # target. Rotated safe dud (never the same expression twice in a row);
-    # the first variant that avoids friendly fire wins, else the rotation
-    # head.
-    for dud in _dud_candidates(salt, RUNG_SOLVER_FAILED):
-        _hit_e, hit_t, result = _verify(game, frame, dud)
-        if not hit_t:
-            return _make_result(dud, result, frame, kills=int(_hit_e))
+    # target. Rotated safe dud (never the same expression twice in a row).
+    # Among verified no-friendly-fire duds, kills still come first (a lucky
+    # dud hit outranks any clean miss), then a dud that exits off-map or
+    # carves no rock (a sky-exit plows nothing — the carve clamp drops
+    # fully-off-map blasts, and ``_carve_hits_rock`` proves the rest)
+    # outranks one that plows rock; rotation order breaks exact ties, so
+    # consecutive dead turns still vary.
+    clean: _Candidate | None = None
+    clean_result: ShotResult | None = None
+    clean_kills = 0
+    clean_key: tuple[int, int, int, int] = (0, 0, 0, 0)
+    for order, dud in enumerate(_dud_candidates(salt, RUNG_SOLVER_FAILED)):
+        hit_e, hit_t, result = _verify(game, frame, dud)
+        if hit_t:
+            continue
+        not_carves = not _carve_hits_rock(game, _predict_carve(result, frame.inverted))
+        key = (
+            -int(hit_e > 0),
+            -int(result.stop == "oob" or not_carves),
+            -int(not_carves),
+            order,
+        )
+        if clean is None or key < clean_key:
+            clean, clean_result, clean_kills, clean_key = dud, result, int(hit_e), key
+    if clean is not None and clean_result is not None:
+        return _make_result(clean, clean_result, frame, kills=clean_kills)
     failed = _Candidate(expression="0*x", rung=RUNG_SOLVER_FAILED, m_bound=0.0)
     _hit_e, _hit_t, result = _verify(game, frame, failed)
     return _make_result(failed, result, frame, kills=int(_hit_e))

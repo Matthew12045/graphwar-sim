@@ -446,4 +446,59 @@ IMPLEMENTED (2026-09-08): one-shot max-kill acceptance (ranking over ladder)
   phase-2 plan for multi-target generators (multi-enemy fits, visit-all
   corridor chain). Baseline shift intended; nothing committed (owner commits).
 ==============================================================================
+IMPLEMENTED (2026-09-08): obstacle-clearing shots (stop dying in rock)
+  Telemetry: ShotResult gains stop (terrain/oob/nan/steps), recorded at the
+  existing physics break points (integration math byte-identical; OOB vs rock
+  distinguished at the break site since collide_point is True for both; NaN
+  keeps JVM order: collide probe at y=0 first, then the NaN check). UI
+  _shot_json carries stop (additive key). Tests: 4 new (seeded terrain/oob,
+  empty-board oob/nan, taxonomy closure + default).
+  Baseline metric (scratch /tmp/stop_baseline.py, seeds 1-40 first turn,
+  zero-kill AND stop=terrain/oob-before-any-enemy-x): BEFORE 2v2 4/40=0.100,
+  4v4 2/40=0.050 (failing seeds 2,18,23,27 / 2,23; zero-kill == rock-dead on
+  first turns). AFTER: identical (4/40, 2/40) - the survivors are knife-edge
+  multi-maneuver slivers (see below); metric script kept under /tmp.
+  Research (Task 2, oracle probes not web): secant-slope shapes ALL die on
+  the muzzle wall in <=63 steps; flat-launch + delayed-maneuver shapes
+  (sigmoid, climb-kink) survive 800-1500 steps. Load-bearing finding: the
+  killer is the MUZZLE wall (first 1-9 units), not the widest mid-field
+  blocker - maneuver centres go at the CLIMB POINT (wall end), never at the
+  blocker. Disqualified: mid-span poles (asymptote death), steep-launch
+  sqrt (slope death), cube-root-via-^ of negatives (NaN per Java Math.pow).
+  Solver: new RUNG_WALL=wall_climb AFTER arc, BEFORE duds/dig (kills-first:
+  strict-> unchanged, perfect early-exit unchanged). Per target: climb kink
+  (m==a flat launch, m_bound 0), delayed sigmoids (b=1.0/0.5, endpoint-exact
+  c, plateau at enemy height = in-band by construction), plateau steps
+  (two-corner piecewise sigmoid for wall+second maneuver). Tie-break: among
+  verified equal-kill shots prefer larger pre-first-kill rock clearance
+  (corridor _column_free margins on subsampled points, rock-only, strict >
+  keeps ladder order on exact ties; kills always dominate). Dud policy
+  (reachable maps only): rank no-FF duds hit > off-map-or-sparing > rotation
+  (seed 18 now fires the oob (0.02)*x^2 over rock-plowing 0*x); unreachable
+  dig/pass flow untouched.
+  Magician rewrite (prompt-only, core untouched): ONE SHOT reality, WALL
+  phase (over-kink first, delayed-step variant, under second, muzzle-wall
+  descending launch, dig fallback), BY-CONSTRUCTION reveal, strengthened
+  fallback (verified-by-construction single > unverified hero multi).
+  Siblings fixed for the same stale tool directives
+  (sniper/howitzer/serpent/bodyguard/professor: simulate() orders ->
+  CLEAR-LANES reads). Pins updated:
+  test_personas adaptation now asserts NO style text mentions
+  simulate/telemetry/budget; ladder-order test gains wall_climb.
+  Results: first-shot kill-all 2v2 11/40 + 4v4 8/40 UNCHANGED (fit-gap
+  29/40 + 32/40, dig 0/40); wall wins 3 partial seeds on clearance ties
+  (2v2 seed 9 kink, 4v4 seeds 11/19 sigmoid - all already 1-kill, now
+  cleaner). Full-game eval --from-seeds -> /tmp/plan_eval (leaderboard
+  untouched): solver 0.900 win / 0.213 hit / 38 kills / SOLVER_FAILED=118 /
+  draws 1 (vs max-kill 0.800/0.158/36/160/draws 2 - cleaner equal-kill paths
+  + wall upgrades + dud policy compound over turns; 0 friendly fire).
+  Latency: max solve 5.70s (2v2 seed 33), 4.40s (4v4 seed 24) - no seed
+  >10s, no cap needed. Gates: pytest tests/ 367 passed, ruff check+format
+  clean, mypy --strict sources clean (31 files; test-file notes pre-date
+  this change). Residual: first-turn seeds 2/18/23/27 need 2+ maneuvers at
+  ~0.01-unit threading precision (single sigmoid died 0.01 under a sliver
+  edge on seed 2) - parametric-fit territory ends here; the visit-all
+  corridor chain (phase-2, out of scope) is the next attack. Nothing
+  committed (owner commits).
+==============================================================================
 END OF REPORT

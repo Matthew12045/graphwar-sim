@@ -225,6 +225,7 @@ def _shot_json(shot: ShotResult) -> dict[str, Any]:
         "last_x": _finite_or_none(shot.last_x),
         "last_y": _finite_or_none(shot.last_y),
         "num_steps": shot.num_steps,
+        "stop": shot.stop,
     }
 
 

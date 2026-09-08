@@ -97,6 +97,7 @@ def test_battery_hit_rate_and_rung_distribution_logged() -> None:
         "parabola",
         RUNG_CCF,
         RUNG_ARC,
+        "wall_climb",
         RUNG_PASS_UNREACHABLE,
         RUNG_SOLVER_FAILED,
         "sacrificial",
@@ -397,16 +398,20 @@ def test_ordered_candidates_is_lazy_and_ordered(monkeypatch: pytest.MonkeyPatch)
     assert first.rung == RUNG_PER_TARGET
     assert calls == [], "CCF was invoked while producing the first candidate"
 
-    # Full materialisation order: fixed-grid / arc also stubbed to cheap
-    # sentinels so no expensive scipy / real LPs run at all.
+    # Full materialisation order: fixed-grid / arc / wall also stubbed to
+    # cheap sentinels so no expensive scipy / real LPs run at all.
     def stub_fixed(f: _Frame, b: float) -> _Candidate | None:
         return _Candidate(expression="0*x", rung=RUNG_FIXED_GRID, m_bound=0.0)
 
     def stub_arc(f: _Frame) -> list[_Candidate]:
         return [_Candidate(expression="0*x", rung=RUNG_ARC, m_bound=0.0)]
 
+    def stub_wall(f: _Frame) -> list[_Candidate]:
+        return [_Candidate(expression="0*x", rung="wall_climb", m_bound=0.0)]
+
     monkeypatch.setattr("graphwar_sim.solver._fixed_grid_gaussians", stub_fixed)
     monkeypatch.setattr("graphwar_sim.solver._arc_candidates", stub_arc)
+    monkeypatch.setattr("graphwar_sim.solver._wall_candidates", stub_wall)
     kinds = [c.rung for c in _ordered_candidates(frame)]
     assert kinds == [
         RUNG_PER_TARGET,
@@ -417,6 +422,7 @@ def test_ordered_candidates_is_lazy_and_ordered(monkeypatch: pytest.MonkeyPatch)
         RUNG_CCF,
         RUNG_FIXED_GRID,
         RUNG_ARC,
+        "wall_climb",
     ]
 
 
@@ -673,3 +679,148 @@ def test_solve_single_target_first_hit_wins(monkeypatch: pytest.MonkeyPatch) -> 
     assert res.expression == first.expression
     assert res.kills == 1
     assert seen == [first.expression]
+
+
+# --- Obstacle-clearing rung (wall_climb) + clearance tie-break + dud policy -
+
+
+def test_wall_candidates_parse_and_hold_endpoints() -> None:
+    """Every wall emission parses and is endpoint-exact by construction:
+    ``f(tx) - f(mx) == ty - my`` (the auto-offset then routes it through the
+    muzzle and the enemy — clearance is the oracle's call)."""
+    from graphwar_sim.solver import _build_frame, _wall_candidates
+
+    game = Game.create(2, num_soldiers=2)
+    frame = _build_frame(game)
+    cands = _wall_candidates(frame)
+    assert cands, "seed 2 must admit wall candidates"
+    assert {c.rung for c in cands} == {"wall_climb"}
+    for cand in cands:
+        f = PolishNotationFunction(cand.expression)  # must parse
+        assert math.isfinite(cand.m_bound) and cand.m_bound >= 0.0
+    # Endpoint-exactness: every candidate aims at (at least) one of its own
+    # targets — ``f(tx) - f(mx) == ty - my`` there (the auto-offset then
+    # routes it through the muzzle and that enemy).
+    for cand in cands:
+        f = PolishNotationFunction(cand.expression)
+        assert any(
+            f.evaluate(tx) - f.evaluate(frame.mx)
+            == pytest.approx(ty - frame.my, rel=1e-6, abs=1e-6)
+            for tx, ty in frame.targets
+        ), cand.expression
+
+
+def test_wall_kink_launches_flat() -> None:
+    """The climb kink's ``m == a`` cancels the corner's left slope, so the
+    launch holds the muzzle sliver (numerical slope at the muzzle ~ 0)."""
+    from graphwar_sim.solver import _build_frame, _wall_candidates
+
+    game = Game.create(2, num_soldiers=2)
+    frame = _build_frame(game)
+    kinks = [
+        c for c in _wall_candidates(frame) if "abs(" in c.expression and "/" not in c.expression
+    ]
+    assert kinks, "expected climb-kink candidates"
+    for cand in kinks:
+        f = PolishNotationFunction(cand.expression)
+        slope = (f.evaluate(frame.mx + 0.01) - f.evaluate(frame.mx)) / 0.01
+        assert abs(slope) < 1e-9, (cand.expression, slope)
+
+
+def test_wall_candidates_are_deterministic() -> None:
+    """No RNG in generation: the same seed yields identical wall emissions."""
+    from graphwar_sim.solver import _build_frame, _wall_candidates
+
+    a = _wall_candidates(_build_frame(Game.create(23, num_soldiers=2)))
+    b = _wall_candidates(_build_frame(Game.create(23, num_soldiers=2)))
+    assert [c.expression for c in a] == [c.expression for c in b]
+
+
+def test_wall_climb_upgrades_equal_kill_path() -> None:
+    """Pinned seeds where the wall rung's equal-kill shot wins on clearance:
+    kills match the old ladder's winner, the rung is wall_climb, and refiring
+    reproduces the kill count with no friendly fire."""
+    from agents.simulate_tool import simulate
+
+    for soldiers, seed in ((2, 9), (4, 11), (4, 19)):
+        game = Game.create(seed, num_teams=2, num_soldiers=soldiers)
+        res = solve(game)
+        assert res.rung == "wall_climb", (soldiers, seed, res.rung)
+        assert (res.kills or 0) >= 1
+        sim = simulate(Game.create(seed, num_teams=2, num_soldiers=soldiers), res.expression)
+        assert sim.parseable and not sim.hit_teammate
+        assert sim.hit_enemy
+
+
+def test_clearance_prefers_open_air_over_rock_graze() -> None:
+    """``_clearance``: a clean-air line scores above a rock-plowing flat."""
+    from graphwar_sim.solver import _build_frame, _Candidate, _clearance, _frame_rock, _verify
+
+    game = _make_collinear_two_enemy_game()
+    frame = _build_frame(game)
+    mcirc, mcarv = _frame_rock(frame)
+    _k, _t, open_result = _verify(game, frame, _Candidate(expression="0*x", rung="x", m_bound=0.0))
+    rock_game = Game.create(21, num_soldiers=2)
+    rock_frame = _build_frame(rock_game)
+    _k2, _t2, rock_result = _verify(
+        rock_game, rock_frame, _Candidate(expression="0*x", rung="x", m_bound=0.0)
+    )
+    assert rock_result.stop == "terrain"
+    assert _clearance(frame, open_result, mcirc, mcarv) > 0.0
+    mcirc2, mcarv2 = _frame_rock(rock_frame)
+    assert _clearance(frame, open_result, mcirc, mcarv) > _clearance(
+        rock_frame, rock_result, mcirc2, mcarv2
+    )
+
+
+def test_clearance_tie_break_prefers_cleaner_equal_kill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Equal kills, different clearance: the cleaner path displaces the
+    earlier candidate — but kills still dominate (a dirtier 2-kill beats a
+    cleaner 1-kill)."""
+    import graphwar_sim.solver as solver_mod
+    from graphwar_sim.physics import ShotResult
+    from graphwar_sim.solver import _Candidate
+
+    first = _Candidate(expression="0*x", rung="line", m_bound=0.0)
+    second = _Candidate(expression="(0.05)*x", rung="wall_climb", m_bound=0.0)
+
+    def fake_ordered(_frame: object) -> object:
+        yield first
+        yield second
+
+    def fake_verify(_g: object, _f: object, cand: _Candidate) -> tuple[int, bool, ShotResult]:
+        return 1, False, ShotResult()
+
+    monkeypatch.setattr(solver_mod, "_ordered_candidates", fake_ordered)
+    monkeypatch.setattr(solver_mod, "_verify", fake_verify)
+
+    # Tied clearances: ladder order holds (strict ``>``).
+    monkeypatch.setattr(solver_mod, "_clearance", lambda _f, _r, _c, _v: 1.0)
+    res = solve(Game.create(7, num_soldiers=2))
+    assert res.expression == first.expression
+
+    # Cleaner second candidate (3.0 > 0.5) displaces the earlier one.
+    margins = [0.5, 3.0]
+
+    def fake_clearance(_f: object, _r: object, _c: object, _v: object) -> float:
+        return margins.pop(0)
+
+    monkeypatch.setattr(solver_mod, "_clearance", fake_clearance)
+    res2 = solve(Game.create(7, num_soldiers=2))
+    assert res2.expression == second.expression
+    assert res2.kills == 1
+
+
+def test_solver_failed_dud_prefers_off_map_exit() -> None:
+    """Pinned seed 18: every dud variant is friendly-fire-free, so the
+    reachable-map dud policy picks the off-map exiter over rock plows."""
+    game = Game.create(18, num_teams=2, num_soldiers=2)
+    res = solve(game)
+    assert res.rung == RUNG_SOLVER_FAILED
+    assert res.expression == "(0.02)*x^2"
+    fresh = Game.create(18, num_teams=2, num_soldiers=2)
+    shot = fresh.fire(res.expression)
+    assert shot.stop == "oob"
+    assert not shot.hits
