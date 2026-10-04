@@ -30,6 +30,7 @@ ui = [
 ]
 llm = [
     "anthropic>=0.40",  # optional: only agents/llm_agent.py imports it (lazily)
+    "openai>=1.40",  # optional: only agents/openai_compat.py imports it (lazily)
 ]
 
 [tool.setuptools.packages.find]
@@ -72,5 +73,5 @@ disallow_untyped_defs = true
 [[tool.mypy.overrides]]
 # agents/llm_agent.py imports the anthropic SDK lazily (optional dependency);
 # it must typecheck with or without the extra installed.
-module = "anthropic.*"
+module = ["anthropic.*", "openai.*"]
 ignore_missing_imports = true

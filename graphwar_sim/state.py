@@ -26,6 +26,7 @@ the specific positions are ``# TUNABLE`` and are not from the source.
 
 from __future__ import annotations
 
+import math
 import random
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -149,13 +150,14 @@ def make_circle_obstacle(
     for cx, cy, r in circles:
         r2 = r * r
         y0, y1 = max(0, cy - r), min(height - 1, cy + r)
-        x0, x1 = max(0, cx - r), min(length - 1, cx + r)
         for y in range(y0, y1 + 1):
             dy = y - cy
-            for x in range(x0, x1 + 1):
-                dx = x - cx
-                if dx * dx + dy * dy <= r2:
-                    grid[y][x] = True
+            # dx*dx + dy*dy <= r2  <=>  |dx| <= isqrt(r2 - dy*dy)  (exact
+            # integer math), so each row is one contiguous run.
+            half = math.isqrt(r2 - dy * dy)
+            x0, x1 = max(0, cx - half), min(length - 1, cx + half)
+            if x0 <= x1:
+                grid[y][x0 : x1 + 1] = [True] * (x1 - x0 + 1)
 
     def collide_point(x: int, y: int) -> bool:
         if x < 0 or x >= length or y < 0 or y >= height:
@@ -192,6 +194,9 @@ class Game:
         # grid itself is carved at the same time. Corridor/CCF subtract these
         # disks from the circle-blocked rows (graphwar_sim/corridor.py).
         self.carves: list[tuple[int, int, int]] = carves if carves is not None else []
+        # Arena rules: "classic" (the reference) or "torus" (NON-reference,
+        # reel mode: shots wrap at the plane edges; see process_function_range).
+        self.arena: str = "classic"
 
     # -- construction -------------------------------------------------------
 
@@ -231,6 +236,10 @@ class Game:
                 out.append(s)
         return out
 
+    def wraps(self) -> bool:
+        """True in the torus arena (shots wrap at the plane edges)."""
+        return self.arena == "torus"
+
     def finished(self) -> bool:
         return self.state.check_game_finished()
 
@@ -251,7 +260,9 @@ class Game:
         shooter = team.current_soldier()
         f = PolishNotationFunction(func_str)
         inverted = team.team == config.TEAM2
-        result = process_function_range(f, shooter, self.all_soldiers(), self.terrain, inverted)
+        result = process_function_range(
+            f, shooter, self.all_soldiers(), self.terrain, inverted, wrap=self.wraps()
+        )
         # Apply kills (GameData.java:1102-1111).
         for player_index, soldier_index, _pos in result.hits:
             self.state.teams[player_index].soldiers[soldier_index].alive = False

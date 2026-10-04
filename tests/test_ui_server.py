@@ -522,6 +522,18 @@ def test_activity_endpoint_via_testclient(client: TestClient) -> None:
     assert body == {"events": [], "next": 0}
 
 
+def test_delta_events_keep_their_event_kind(client: TestClient) -> None:
+    """A delta's own text|thinking kind rides as delta_kind; it must not
+    overwrite the event kind (the UI routes on kind == "delta")."""
+    from ui import server
+
+    server._activity_append("delta", {"kind": "thinking", "text": "hmm"}, "llm:m")
+    events = client.get("/api/activity", params={"since": 0}).json()["events"]
+    assert events[-1]["kind"] == "delta"
+    assert events[-1]["delta_kind"] == "thinking"
+    assert events[-1]["text"] == "hmm"
+
+
 # --- Demo driver swap + thinking bubble plan (G1/G2/G4/G6) ----------------------
 
 
@@ -688,3 +700,19 @@ def test_server_cancel_event_fires_a_scripted_llm_turn() -> None:
         assert agent._client.messages.calls == 0  # no API round-trip happened
     finally:
         server_module._cancel_requested.clear()
+
+
+def test_banter_flag_reaches_llm_agents_only(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """Reel mode's banter flag turns on taunts for single-shot LLM sides."""
+    from ui import server
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    response = client.post(
+        "/api/new_game",
+        json={"seed": 3, "banter": True, "team_modes": {"team1": "llm:m", "team2": "solver"}},
+    )
+    assert response.status_code == 200, response.text
+    assert server._team_agents[server.TEAM1].banter is True
+    assert not hasattr(server._team_agents[server.TEAM2], "banter")

@@ -978,7 +978,7 @@ def _verify(game: Game, frame: _Frame, cand: _Candidate) -> tuple[int, bool, Sho
     except MalformedFunction:
         return 0, False, ShotResult()
     result = process_function_range(
-        f, frame.shooter, game.all_soldiers(), game.terrain, frame.inverted
+        f, frame.shooter, game.all_soldiers(), game.terrain, frame.inverted, wrap=game.wraps()
     )
     enemy_ids = {(s.player_index, s.soldier_index) for s in frame.enemies}
     enemy_kills = 0

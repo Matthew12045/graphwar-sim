@@ -310,6 +310,8 @@ def test_missing_auth_env_vars_raise_at_construction(
 ) -> None:
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("GRAPHWAR_LLM_PROVIDER", raising=False)
     with pytest.raises(RuntimeError) as excinfo:
         LLMAgent(model="fake-model")
     message = str(excinfo.value)
@@ -749,3 +751,26 @@ def test_eval_runs_without_a_cancel_callback_and_cannot_swallow_one() -> None:
         play_match(
             21, _CancellingAgent(), StraightShotAgent(), MatchConfig(num_soldiers=2, max_turns=2)
         )
+
+
+# --- reel-mode banter ------------------------------------------------------------
+
+
+def test_banter_off_by_default_strips_say_line_and_keeps_prompt() -> None:
+    agent = _agent([_text("SAY: you're toast\nx/4")])
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "x/4"
+    assert agent._client.messages.calls[0]["system"] == _SYSTEM_PROMPT
+
+
+def test_banter_on_asks_for_and_emits_the_taunt() -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    agent = _agent(
+        [_text("SAY: Then let the curve bury you.\nx^2/40")],
+        on_event=lambda kind, payload: events.append((kind, payload)),
+    )
+    agent.banter = True
+    game, obs = _game_and_obs()
+    assert agent.act(game, obs) == "x^2/40"
+    assert "SAY: " in agent._client.messages.calls[0]["system"]
+    assert ("say", {"text": "Then let the curve bury you."}) in events

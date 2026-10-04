@@ -116,6 +116,46 @@ x-api-key, plus optional `ANTHROPIC_BASE_URL`). The `anthropic` SDK is the
 optional `[llm]` extra. The `67` bot baseline is roster-selectable by key
 `"67"` (a guaranteed dud, so it stays out of the default round-robin).
 
+### Running Qwen3.8-27B (or any model) over an OpenAI-compatible API
+
+The LLM agents (`llm:<model>` and `hybrid:<model>`, in eval and the UI) can
+also talk to any server that speaks the OpenAI Chat Completions API — a local
+vLLM, Ollama or LM Studio, or a hosted provider. `agents/openai_compat.py`
+adapts that API to the agents, so nothing else changes. Set:
+
+| Variable | Meaning |
+|----------|---------|
+| `OPENAI_BASE_URL` | the server's `/v1` root; setting it (with no `ANTHROPIC_*` key) selects this backend |
+| `OPENAI_API_KEY` | optional for local servers |
+| `GRAPHWAR_LLM_PROVIDER` | `openai` or `anthropic` to force a backend when both are configured |
+| `GRAPHWAR_LLM_MAX_TOKENS` | output cap per call (default 32768) |
+| `GRAPHWAR_REASONING_EFFORT` | `low` / `medium` (default) / `high`, or `off` to send none |
+
+Example with vLLM serving [Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B):
+
+```bash
+vllm serve Qwen/Qwen3.8-27B-FP8 --port 8001 --reasoning-parser qwen3
+export OPENAI_BASE_URL=http://localhost:8001/v1
+python3 -m pip install -e ".[ui,llm]"
+python3 -m uvicorn ui.server:app
+```
+
+Then pick **LLM** (or **LLM Plan**) for a side in the match panel and type the
+model name the server uses (`Qwen/Qwen3.8-27B-FP8` above; for Ollama, its tag,
+with `OPENAI_BASE_URL=http://localhost:11434/v1`). Qwen's reasoning streams
+live into the match log; only the final answer is fired.
+
+Tick **Reel mode** in the playback bar (or open `/?reel=1`) to record an
+AI-vs-AI clip: the classic screen in a vertical 9:16 letterbox, bot names on
+the soldier labels, a speech bubble with each shot's formula, trails that stay
+on the board, crossed-out markers for dead soldiers, and one-line taunts from
+`llm:` sides (sent as `banter: true` on New Match). The **Controls** button
+(or the `c` key) shows the setup panel; set **Soldiers** to 4 for a fuller
+board. **Arena: Torus (wrap)** is a non-reference rule seen in
+those clips: a curve that leaves one edge re-enters on the opposite edge
+instead of dying (`arena: "torus"` on New Match; the classic arena stays the
+default and byte-identical).
+
 ## Install
 
 ```bash

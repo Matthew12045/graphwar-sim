@@ -115,6 +115,7 @@ _RETRYABLE_API_ERROR_NAMES: frozenset[str] = frozenset(
         "ReadError",
         "WriteError",
         "ConnectError",
+        "APITimeoutError",  # the openai SDK's timeout (OpenAI-compatible backend)
     }
 )
 
@@ -223,8 +224,44 @@ OUTPUT: emit ONLY the bare expression on one line (no "y =", no prose, no \
 code fence).\
 """
 
+# Optional banter (the UI's reel mode): one in-character taunt line BEFORE the
+# expression. Off by default so eval prompts stay byte-identical.
+_BANTER_PROMPT = """\
+
+BANTER: before the expression, write ONE short in-character taunt to your \
+opponent on its own line, prefixed exactly "SAY: " (max ~12 words, no \
+slurs). The LAST line must still be the bare expression.\
+"""
+
+_SAY_LINE: re.Pattern[str] = re.compile(r"^\s*SAY\s*:\s*(.*?)\s*$", re.IGNORECASE)
+
+# Torus arena (non-reference) override for the HARD RULES band kill.
+_TORUS_NOTE: str = (
+    "ARENA: TORUS (overrides the band rule above): the board wraps. A curve "
+    "leaving the top re-enters at the bottom (and vice versa), and one "
+    "leaving the right edge re-enters on the left. Leaving the band does NOT "
+    "kill the shot; it ends on terrain or after several laps, and it can "
+    "come round and hit your own allies."
+)
+
 _LEADING_Y_EQUALS: re.Pattern[str] = re.compile(r"^y\s*=\s*", re.IGNORECASE)
 _CODE_FENCE: re.Pattern[str] = re.compile(r"^```")
+
+
+def _split_say(text: str) -> tuple[str | None, str]:
+    """Pull the optional ``SAY:`` taunt line out of a response. Returns
+    ``(taunt or None, remaining text)`` — the SAY line never reaches the
+    expression extraction, wherever the model put it."""
+    taunt: str | None = None
+    kept: list[str] = []
+    for line in text.splitlines():
+        match = _SAY_LINE.match(line)
+        if match:
+            if taunt is None and match.group(1):
+                taunt = match.group(1)[:160]
+            continue
+        kept.append(line)
+    return taunt, "\n".join(kept)
 
 
 def _extract_candidate(text: str) -> str | None:
@@ -363,6 +400,8 @@ def _turn_message(game: Game, obs: Observation) -> str:
     warning = _muzzle_wall_warning(obs)
     if warning is not None:
         lines.extend(["", warning])
+    if getattr(game, "arena", "classic") == "torus":
+        lines.extend(["", _TORUS_NOTE])
     return "\n".join(lines)
 
 
@@ -375,7 +414,16 @@ def _build_client() -> Any:
     Raises BEFORE any network call when neither token variable is set,
     naming both — a misconfigured agent must fail at construction, never
     mid-match. The token value itself never enters the repo.
+
+    When the environment selects the OpenAI-compatible backend
+    (``OPENAI_BASE_URL`` / ``GRAPHWAR_LLM_PROVIDER=openai``, see
+    :mod:`agents.openai_compat`) the client is that adapter instead — local
+    vLLM / Ollama / LM Studio or any hosted OpenAI-style provider.
     """
+    from .openai_compat import build_openai_client, openai_backend_selected
+
+    if openai_backend_selected():
+        return build_openai_client()
     token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if token is None and api_key is None:
@@ -439,12 +487,24 @@ class LLMAgent:
         # and rounds die at the gateway's ~125s wall; "medium" caps it and
         # rounds conclude reliably. Auto: apply through gateways only —
         # real Anthropic APIs reject unknown body fields.
-        if reasoning_effort is None and os.environ.get("ANTHROPIC_BASE_URL"):
-            reasoning_effort = _REASONING_EFFORT
+        # The OpenAI-compatible backend (local vLLM/Ollama serving Qwen) is
+        # the same reasoning-model case. GRAPHWAR_REASONING_EFFORT overrides
+        # the auto value; "off" sends none (servers that reject the field).
+        if reasoning_effort is None:
+            from .openai_compat import openai_backend_selected
+
+            env_effort = os.environ.get("GRAPHWAR_REASONING_EFFORT", "").strip().lower()
+            if env_effort:
+                reasoning_effort = None if env_effort == "off" else env_effort
+            elif os.environ.get("ANTHROPIC_BASE_URL") or openai_backend_selected():
+                reasoning_effort = _REASONING_EFFORT
         self._reasoning_effort = reasoning_effort
         # Fail at construction on a missing token — never mid-match.
         self._client = client if client is not None else _build_client()
         self._stats = AgentStats()
+        # Reel-mode banter (the UI sets it): ask for a SAY: taunt line and
+        # emit it as a ("say", {"text"}) feed event. Off for eval.
+        self.banter: bool = False
         # The turn's last assistant text block (the professor verifier's
         # structural check reads it; the emission otherwise discards it).
         self._last_assistant_text: str | None = None
@@ -481,6 +541,9 @@ class LLMAgent:
             if text:
                 self._last_assistant_text = text
                 self._emit("text", {"text": text})
+            taunt, text = _split_say(text)
+            if taunt is not None and self.banter:
+                self._emit("say", {"text": taunt})
             candidate = _extract_candidate(text)
             if candidate is None:
                 self._stats.parse_failures += 1
@@ -617,7 +680,7 @@ class LLMAgent:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": _MAX_OUTPUT_TOKENS,
-            "system": self._system_prompt,
+            "system": self._system_prompt + (_BANTER_PROMPT if self.banter else ""),
             "messages": messages,
         }
         if self._reasoning_effort is not None:

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from . import config
 
@@ -430,9 +430,10 @@ class PolishNotationFunction:
     Construct from a string; malformed input raises :class:`MalformedFunction`.
     """
 
-    __slots__ = ("_function", "_depth")
+    __slots__ = ("_function", "_depth", "_src", "_fn")
 
     def __init__(self, func_str: str) -> None:
+        self._src = func_str
         normal = _create_regular_notation_tokens(func_str)
         self._function: list[_Token] = _reorder_tokens_to_polish(normal)
         if _get_values_needed(self._function) != 0:
@@ -447,6 +448,13 @@ class PolishNotationFunction:
         if depth is None or depth > config.MAX_AST_DEPTH:
             raise MalformedFunction()
         self._depth = depth
+        # The prefix list compiled once into a closure tree (see _compile):
+        # identical arithmetic, no per-node dispatch on every evaluation.
+        self._fn = _compile(self._function)
+
+    def __reduce__(self) -> tuple[type[PolishNotationFunction], tuple[str]]:
+        # Closures don't pickle; rebuild from the source string instead.
+        return (PolishNotationFunction, (self._src,))
 
     def depth(self) -> int:
         """The evaluation-tree depth: 1 for a bare literal/variable, one more
@@ -462,6 +470,16 @@ class PolishNotationFunction:
 
     def evaluate(self, var1: float, var2: float = 0.0, var3: float = 0.0) -> float:
         """Evaluate the function at ``(var1, var2, var3)``.
+
+        Runs the compiled closure tree (:func:`_compile`); the reference
+        recursive read below is kept as :meth:`evaluate_reference` and the
+        two are pinned bit-for-bit equal by tests.
+        """
+        return self._fn(var1, var2, var3)
+
+    def evaluate_reference(self, var1: float, var2: float = 0.0, var3: float = 0.0) -> float:
+        """Evaluate the function at ``(var1, var2, var3)`` by direct
+        recursive read of the prefix list (the original interpreter).
 
         Equivalent to ``evaluateFunction``/``evaluateRec``
         (PolishNotationFunction.java:968-1127). The token list is **prefix**
@@ -514,3 +532,101 @@ class PolishNotationFunction:
             raise MalformedFunction()  # pragma: no cover
 
         return rec()
+
+
+# --- Compiled evaluation ---------------------------------------------------------
+#
+# ``_compile`` turns the prefix token list into a tree of closures, one per
+# node, so ``evaluate`` no longer walks an if-chain per token per call (the
+# physics evaluates every shot ~20k times, the solver thousands of shots per
+# turn). Semantics are unchanged: each node applies the SAME operation (the
+# same _java_* helper or Python operator) to its operands in the SAME order,
+# and variable-free subtrees are folded at compile time by running exactly
+# those operations once — IEEE arithmetic is deterministic, so the folded
+# value is the value every evaluation would have produced.
+
+_Fn = Callable[[float, float, float], float]
+
+_UNARY: dict[int, Callable[[float], float]] = {
+    config.SQRT: _java_sqrt,
+    config.LOG: _java_log10,
+    config.ABS: abs,
+    config.SIN: _java_sin,
+    config.COS: _java_cos,
+    config.TAN: _java_tan,
+    config.LN: _java_log,
+}
+
+
+def _compile(tokens: Sequence[_Token]) -> _Fn:
+    pos = 0
+
+    def build() -> tuple[_Fn, float | None]:
+        """Return ``(closure, constant)``; ``constant`` is not None when the
+        subtree has no variables (its folded value)."""
+        nonlocal pos
+        tok = tokens[pos]
+        pos += 1
+        t = tok.type
+        if t == config.VARIABLE1:
+            return (lambda a, b, c: a), None
+        if t == config.VARIABLE2:
+            return (lambda a, b, c: b), None
+        if t == config.VARIABLE3:
+            return (lambda a, b, c: c), None
+        if t == config.VALUE:
+            v = tok.value
+            assert v is not None
+            return (lambda a, b, c: v), v
+        if t == config.SUBTRACT:
+            f, k = build()
+            if k is not None:
+                return _const(-k)
+            return (lambda a, b, c: -f(a, b, c)), None
+        un = _UNARY.get(t)
+        if un is not None:
+            f, k = build()
+            if k is not None:
+                return _const(un(k))
+            return (lambda a, b, c: un(f(a, b, c))), None
+        if t in (config.ADD, config.MULTIPLY, config.DIVIDE, config.POW):
+            lf, lk = build()
+            rf, rk = build()
+            return _binary(t, lf, lk, rf, rk)
+        raise MalformedFunction()  # pragma: no cover - see evaluate_reference
+
+    fn, _ = build()
+    return fn
+
+
+def _const(v: float) -> tuple[_Fn, float]:
+    return (lambda a, b, c: v), v
+
+
+def _binary(
+    t: int, lf: _Fn, lk: float | None, rf: _Fn, rk: float | None
+) -> tuple[_Fn, float | None]:
+    if t == config.ADD:
+        if lk is not None and rk is not None:
+            return _const(lk + rk)
+        if lk is not None:
+            return (lambda a, b, c: lk + rf(a, b, c)), None
+        if rk is not None:
+            return (lambda a, b, c: lf(a, b, c) + rk), None
+        return (lambda a, b, c: lf(a, b, c) + rf(a, b, c)), None
+    if t == config.MULTIPLY:
+        if lk is not None and rk is not None:
+            return _const(lk * rk)
+        if lk is not None:
+            return (lambda a, b, c: lk * rf(a, b, c)), None
+        if rk is not None:
+            return (lambda a, b, c: lf(a, b, c) * rk), None
+        return (lambda a, b, c: lf(a, b, c) * rf(a, b, c)), None
+    op = _java_div if t == config.DIVIDE else _java_pow
+    if lk is not None and rk is not None:
+        return _const(op(lk, rk))
+    if lk is not None:
+        return (lambda a, b, c: op(lk, rf(a, b, c))), None
+    if rk is not None:
+        return (lambda a, b, c: op(lf(a, b, c), rk)), None
+    return (lambda a, b, c: op(lf(a, b, c), rf(a, b, c))), None

@@ -52,6 +52,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from agents import Agent, TurnCancelled, hit_team_counts, observe
+from agents.llm_agent import LLMAgent
 from eval.runner import _classify, _peek_solver_rung, make_agent
 from graphwar_sim import TEAM1, TEAM2, config
 from graphwar_sim.parser import MalformedFunction, PolishNotationFunction
@@ -72,6 +73,8 @@ _team_modes: dict[int, str] = {}
 _team_agents: dict[int, Agent] = {}
 _turns_played: int = 0
 _max_turns: int | None = None
+_banter: bool = False  # reel-mode taunts for llm: sides (NewGameBody.banter)
+_ARENAS: frozenset[str] = frozenset({"classic", "torus"})
 # Slice C cancellation: set by /api/new_game BEFORE it acquires the lock (an
 # in-flight agent turn holds the lock for the length of its LLM loop — setting
 # first is what lets the turn unwind and free it). The fresh match clears the
@@ -96,7 +99,12 @@ def _activity_append(kind: str, payload: dict[str, Any], agent: str) -> None:
     """Append one feed event with a monotonic id (the sink LLMAgent calls)."""
     global _activity_next_id
     with _activity_lock:
-        _activity.append({"id": _activity_next_id, "agent": agent, "kind": kind, **payload})
+        entry: dict[str, Any] = {"id": _activity_next_id, "agent": agent, "kind": kind}
+        for key, value in payload.items():
+            # A delta's own "kind" (text|thinking) must not clobber the event
+            # kind ("delta") — it rides as delta_kind.
+            entry["delta_kind" if key == "kind" else key] = value
+        _activity.append(entry)
         _activity_next_id += 1
 
 
@@ -125,6 +133,10 @@ class NewGameBody(BaseModel):
     num_soldiers: int | None = None
     team_modes: _TeamModesBody | None = None
     max_turns: int | None = None
+    # Reel mode: single-shot LLM sides add a one-line taunt ("say" events).
+    banter: bool = False
+    # Arena rules: "classic" (the reference) or "torus" (shots wrap at edges).
+    arena: str = "classic"
 
 
 class SetModesBody(BaseModel):
@@ -203,6 +215,8 @@ def _board_json(game: Game) -> dict[str, Any]:
         # Craters as (x, y, r) — the frontend punches them out in white
         # (do NOT rasterize; same convention as circles).
         "carves": [list(c) for c in game.carves],
+        # Arena rules: "classic" (reference) or "torus" (shots wrap; reel mode).
+        "arena": game.arena,
         "finished": game.finished(),
         "winner": game.winner(),
         "turns_played": _turns_played,
@@ -290,7 +304,12 @@ def _agent_for_mode(mode: str) -> Agent:
         raise ValueError("llm: mode needs a model name (llm:<model>)")
     if mode == "hybrid:":
         raise ValueError("hybrid: mode needs a model name (hybrid:<model>)")
-    return make_agent(mode, seed=0, cancel_requested=_cancel_requested.is_set)
+    agent = make_agent(mode, seed=0, cancel_requested=_cancel_requested.is_set)
+    # Banter only for the single-shot LLM agent: the hybrid's reply must stay
+    # pure plan JSON.
+    if _banter and type(agent) is LLMAgent:
+        agent.banter = True
+    return agent
 
 
 def _shooter_info(game: Game) -> dict[str, Any]:
@@ -337,6 +356,14 @@ def new_game(body: NewGameBody | None = None) -> dict[str, Any] | JSONResponse:
     mode_team1 = body.team_modes.team1 if body is not None and body.team_modes else "human"
     mode_team2 = body.team_modes.team2 if body is not None and body.team_modes else "human"
     max_turns = body.max_turns if body is not None else None
+    global _banter
+    _banter = bool(body.banter) if body is not None else False
+    arena = body.arena if body is not None else "classic"
+    if arena not in _ARENAS:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "bad_arena", "detail": f"arena must be one of {sorted(_ARENAS)}"},
+        )
     if max_turns is not None and max_turns < 1:
         return JSONResponse(
             status_code=400,
@@ -364,6 +391,7 @@ def new_game(body: NewGameBody | None = None) -> dict[str, Any] | JSONResponse:
             )
         _seed = seed
         _game = Game.create(seed=seed, num_teams=2, num_soldiers=num_soldiers)
+        _game.arena = arena
         _team_modes = {TEAM1: mode_team1, TEAM2: mode_team2}
         _team_agents = agents_by_team
         _turns_played = 0
