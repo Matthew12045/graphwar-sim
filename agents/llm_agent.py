@@ -224,8 +224,35 @@ OUTPUT: emit ONLY the bare expression on one line (no "y =", no prose, no \
 code fence).\
 """
 
+# Optional banter (the UI's reel mode): one in-character taunt line BEFORE the
+# expression. Off by default so eval prompts stay byte-identical.
+_BANTER_PROMPT = """\
+
+BANTER: before the expression, write ONE short in-character taunt to your \
+opponent on its own line, prefixed exactly "SAY: " (max ~12 words, no \
+slurs). The LAST line must still be the bare expression.\
+"""
+
+_SAY_LINE: re.Pattern[str] = re.compile(r"^\s*SAY\s*:\s*(.*?)\s*$", re.IGNORECASE)
+
 _LEADING_Y_EQUALS: re.Pattern[str] = re.compile(r"^y\s*=\s*", re.IGNORECASE)
 _CODE_FENCE: re.Pattern[str] = re.compile(r"^```")
+
+
+def _split_say(text: str) -> tuple[str | None, str]:
+    """Pull the optional ``SAY:`` taunt line out of a response. Returns
+    ``(taunt or None, remaining text)`` — the SAY line never reaches the
+    expression extraction, wherever the model put it."""
+    taunt: str | None = None
+    kept: list[str] = []
+    for line in text.splitlines():
+        match = _SAY_LINE.match(line)
+        if match:
+            if taunt is None and match.group(1):
+                taunt = match.group(1)[:160]
+            continue
+        kept.append(line)
+    return taunt, "\n".join(kept)
 
 
 def _extract_candidate(text: str) -> str | None:
@@ -464,6 +491,9 @@ class LLMAgent:
         # Fail at construction on a missing token — never mid-match.
         self._client = client if client is not None else _build_client()
         self._stats = AgentStats()
+        # Reel-mode banter (the UI sets it): ask for a SAY: taunt line and
+        # emit it as a ("say", {"text"}) feed event. Off for eval.
+        self.banter: bool = False
         # The turn's last assistant text block (the professor verifier's
         # structural check reads it; the emission otherwise discards it).
         self._last_assistant_text: str | None = None
@@ -500,6 +530,9 @@ class LLMAgent:
             if text:
                 self._last_assistant_text = text
                 self._emit("text", {"text": text})
+            taunt, text = _split_say(text)
+            if taunt is not None and self.banter:
+                self._emit("say", {"text": taunt})
             candidate = _extract_candidate(text)
             if candidate is None:
                 self._stats.parse_failures += 1
@@ -636,7 +669,7 @@ class LLMAgent:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": _MAX_OUTPUT_TOKENS,
-            "system": self._system_prompt,
+            "system": self._system_prompt + (_BANTER_PROMPT if self.banter else ""),
             "messages": messages,
         }
         if self._reasoning_effort is not None:

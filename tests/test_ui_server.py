@@ -700,3 +700,19 @@ def test_server_cancel_event_fires_a_scripted_llm_turn() -> None:
         assert agent._client.messages.calls == 0  # no API round-trip happened
     finally:
         server_module._cancel_requested.clear()
+
+
+def test_banter_flag_reaches_llm_agents_only(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """Reel mode's banter flag turns on taunts for single-shot LLM sides."""
+    from ui import server
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    response = client.post(
+        "/api/new_game",
+        json={"seed": 3, "banter": True, "team_modes": {"team1": "llm:m", "team2": "solver"}},
+    )
+    assert response.status_code == 200, response.text
+    assert server._team_agents[server.TEAM1].banter is True
+    assert not hasattr(server._team_agents[server.TEAM2], "banter")

@@ -52,6 +52,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from agents import Agent, TurnCancelled, hit_team_counts, observe
+from agents.llm_agent import LLMAgent
 from eval.runner import _classify, _peek_solver_rung, make_agent
 from graphwar_sim import TEAM1, TEAM2, config
 from graphwar_sim.parser import MalformedFunction, PolishNotationFunction
@@ -72,6 +73,7 @@ _team_modes: dict[int, str] = {}
 _team_agents: dict[int, Agent] = {}
 _turns_played: int = 0
 _max_turns: int | None = None
+_banter: bool = False  # reel-mode taunts for llm: sides (NewGameBody.banter)
 # Slice C cancellation: set by /api/new_game BEFORE it acquires the lock (an
 # in-flight agent turn holds the lock for the length of its LLM loop — setting
 # first is what lets the turn unwind and free it). The fresh match clears the
@@ -130,6 +132,8 @@ class NewGameBody(BaseModel):
     num_soldiers: int | None = None
     team_modes: _TeamModesBody | None = None
     max_turns: int | None = None
+    # Reel mode: single-shot LLM sides add a one-line taunt ("say" events).
+    banter: bool = False
 
 
 class SetModesBody(BaseModel):
@@ -295,7 +299,12 @@ def _agent_for_mode(mode: str) -> Agent:
         raise ValueError("llm: mode needs a model name (llm:<model>)")
     if mode == "hybrid:":
         raise ValueError("hybrid: mode needs a model name (hybrid:<model>)")
-    return make_agent(mode, seed=0, cancel_requested=_cancel_requested.is_set)
+    agent = make_agent(mode, seed=0, cancel_requested=_cancel_requested.is_set)
+    # Banter only for the single-shot LLM agent: the hybrid's reply must stay
+    # pure plan JSON.
+    if _banter and type(agent) is LLMAgent:
+        agent.banter = True
+    return agent
 
 
 def _shooter_info(game: Game) -> dict[str, Any]:
@@ -342,6 +351,8 @@ def new_game(body: NewGameBody | None = None) -> dict[str, Any] | JSONResponse:
     mode_team1 = body.team_modes.team1 if body is not None and body.team_modes else "human"
     mode_team2 = body.team_modes.team2 if body is not None and body.team_modes else "human"
     max_turns = body.max_turns if body is not None else None
+    global _banter
+    _banter = bool(body.banter) if body is not None else False
     if max_turns is not None and max_turns < 1:
         return JSONResponse(
             status_code=400,

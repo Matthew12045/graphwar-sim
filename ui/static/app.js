@@ -46,6 +46,7 @@ var modelTeam2Input = document.getElementById("model-team2");
 var personaTeam1Sel = document.getElementById("persona-team1");
 var personaTeam2Sel = document.getElementById("persona-team2");
 var maxTurnsInput = document.getElementById("max-turns");
+var soldiersInput = document.getElementById("num-soldiers");
 var playPauseBtn = document.getElementById("play-pause");
 var stepBtn = document.getElementById("step");
 var speedSel = document.getElementById("speed");
@@ -91,26 +92,35 @@ var deltaAgent = null; // the agent prefix the growing line was opened with
 var THINK_LINE_CAP = 14; // keep the last ~14 lines (# TUNABLE)
 var thinkActive = false;
 var thinkLines = []; // [{text, commit}] compact bubble body lines
+var thinkAnchor = null; // {player_index, soldier_index, color, team} the bubble is pinned to
+var thinkSay = null; // this turn's taunt (reel mode banter), kept above the commit
 
 function isLLMMode(mode) {
   return mode.indexOf("llm:") === 0 || mode.indexOf("hybrid:") === 0;
 }
 
-function openThinkBubble() {
-  if (!board || !board.shooter || !isLLMMode(currentSideMode())) {
+function openThinkBubble(force) {
+  if (!board || !board.shooter || (!force && !isLLMMode(currentSideMode()))) {
     hideThinkBubble();
     return;
   }
   thinkActive = true;
   thinkLines = [];
+  thinkSay = null;
+  thinkAnchor = {
+    player_index: board.shooter.player_index,
+    soldier_index: board.shooter.soldier_index,
+    color: board.shooter.color,
+  };
   renderThinkBubble();
   thinkBubble.classList.remove("hidden");
   positionThinkBubble();
 }
 
 function hideThinkBubble() {
-  if (window.Broadcast) window.Broadcast.turnEnded();
   thinkActive = false;
+  thinkAnchor = null;
+  thinkSay = null;
   thinkLines = [];
   if (thinkBubble) thinkBubble.classList.add("hidden");
 }
@@ -123,15 +133,21 @@ function appendThinkLine(text, commit) {
 }
 
 function renderThinkBubble() {
-  if (!thinkBubble || !board || !board.shooter) return;
-  var shooter = board.shooter;
+  if (!thinkBubble || !board || !thinkAnchor) return;
+  var pi = thinkAnchor.player_index;
   thinkBubble.innerHTML = "";
-  thinkBubble.style.setProperty("--think-color", shooter.color);
+  thinkBubble.style.setProperty("--think-color", thinkAnchor.color);
   var name = document.createElement("div");
   name.className = "think-name";
-  name.style.color = shooter.color;
-  name.textContent = shooter.label;
+  name.style.color = thinkAnchor.color;
+  name.textContent = window.Reel ? window.Reel.label(board, pi) : board.teams[pi].label;
   thinkBubble.appendChild(name);
+  if (thinkSay !== null) {
+    var say = document.createElement("div");
+    say.className = "think-say";
+    say.textContent = "\u201c" + thinkSay + "\u201d";
+    thinkBubble.appendChild(say);
+  }
   for (var i = 0; i < thinkLines.length; i++) {
     var line = document.createElement("div");
     line.className = thinkLines[i].commit ? "think-commit" : "think-line";
@@ -149,8 +165,8 @@ function showThinkCommit(expr) {
 
 function positionThinkBubble() {
   if (!thinkBubble || thinkBubble.classList.contains("hidden")) return;
-  if (!board || !board.shooter) return;
-  var cur = soldierPos(board.shooter.player_index, board.shooter.soldier_index);
+  if (!board || !thinkAnchor) return;
+  var cur = soldierPos(thinkAnchor.player_index, thinkAnchor.soldier_index);
   var appX = 15 + cur.x;
   var appY = 15 + cur.y;
   // Same flip rule as drawNameLabel: boxY < 0 → below the soldier.
@@ -243,7 +259,6 @@ function renderActivity(events) {
         logBox.appendChild(deltaLine);
       }
       deltaLine._body.textContent += ev.text;
-      if (window.Broadcast) window.Broadcast.delta(ev.delta_kind, ev.text);
       logBox.scrollTop = logBox.scrollHeight;
       capLogChildren();
       continue;
@@ -289,8 +304,18 @@ function renderActivity(events) {
       var personaText = "[persona " + ev.constraint + "] " + ev.verdict;
       feedLine(ev.agent, personaText);
       appendThinkLine(personaText, false);
+    } else if (ev.kind === "say") {
+      var sayIdx = thinkAnchor ? thinkAnchor.player_index : 0;
+      var sayName = window.Reel ? window.Reel.label(board, sayIdx) : ev.agent;
+      logLine([
+        { cls: "name", color: board.teams[sayIdx].color, text: sayName + ": " },
+        { cls: "", text: ev.text },
+      ]);
+      if (thinkActive) {
+        thinkSay = ev.text;
+        renderThinkBubble();
+      }
     } else if (ev.kind === "plan") {
-      if (window.Broadcast) window.Broadcast.note("plan " + ev.target + " (" + ev.n_waypoints + " waypoints)");
       feedLine(ev.agent, "plan " + ev.target + " (" + ev.n_waypoints + " waypoints)");
       appendThinkLine("plan " + ev.target + " (" + ev.n_waypoints + " waypoints)", false);
     } else if (ev.kind === "solve") {
@@ -551,6 +576,8 @@ function draw(now) {
     ctx.restore();
   }
 
+  if (window.Reel) window.Reel.drawTrails(strokePoints);
+
   var head = null;
   if (shotAnim) {
     var k = Math.min(1, (now - shotAnim.start) / FLY_TIME);
@@ -587,14 +614,18 @@ function draw(now) {
   // soldiers + name labels (alive only; dead vanish, §2.2)
   board.teams.forEach(function (team) {
     team.soldiers.forEach(function (s) {
-      if (!s.alive) return;
+      if (!s.alive) {
+        if (window.Reel) window.Reel.drawDead(ctx, s.x, s.y); // reel mode only
+        return;
+      }
       drawSoldier(s.x, s.y, team.color, team.team === 2);
     });
   });
-  board.teams.forEach(function (team) {
+  board.teams.forEach(function (team, ti) {
+    var label = window.Reel ? window.Reel.label(board, ti) : team.label;
     team.soldiers.forEach(function (s) {
       if (!s.alive) return;
-      drawNameLabel(s.x, s.y, team.label, team.color);
+      drawNameLabel(s.x, s.y, label, team.color);
     });
   });
 
@@ -704,7 +735,6 @@ function applyBoard(newBoard) {
   }
   if (dialAngle === null) dialAngle = 0; // soldier angle starts at 0 (display-only)
   drawCompass();
-  if (window.Broadcast) window.Broadcast.board(board, newBoard.team_modes || teamModes);
 }
 
 function setInputEnabled(enabled) {
@@ -792,7 +822,7 @@ function syncSetupFromServer(data) {
     modelTeam2Input.value = wireToModel(teamModes.team2);
     personaTeam2Sel.value = wireToPersona(teamModes.team2);
     updateModelInputs();
-    if (window.Broadcast && board) window.Broadcast.board(board, teamModes);
+    if (window.Reel) window.Reel.setModes(teamModes);
   }
   if (typeof data.max_turns === "number") {
     maxTurnsInput.value = data.max_turns;
@@ -896,7 +926,7 @@ function agentTurn() {
   var requestEpoch = epoch;
   var llmTurn = isLLMMode(currentSideMode());
   if (llmTurn) openThinkBubble();
-  if (llmTurn && window.Broadcast) window.Broadcast.turnStart(board.shooter);
+  else hideThinkBubble(); // reel mode may still show the last shooter's bubble
   animating = true;
   updateControls();
   startActivityPoll(); // Slice B: live feed while the LLM turn runs
@@ -977,6 +1007,9 @@ function newGame() {
   };
   var mt = parseInt(maxTurnsInput.value, 10);
   if (!isNaN(mt) && mt >= 1) body.max_turns = mt;
+  var ns = parseInt(soldiersInput.value, 10);
+  if (!isNaN(ns) && ns >= 1) body.num_soldiers = ns;
+  body.banter = !!(window.Reel && window.Reel.isOn());
   setPlaying(false);
   postJSON("/api/new_game", body)
     .then(function (r) {
@@ -1005,7 +1038,8 @@ function adoptNewBoard(data, optMsg) {
   hideThinkBubble();
   applyBoard(data);
   syncSetupFromServer(data);
-  if (window.Broadcast) window.Broadcast.newMatch(board, teamModes);
+  if (window.Reel) window.Reel.newMatch(teamModes);
+  if (typeof data.num_soldiers === "number") soldiersInput.value = data.num_soldiers;
   updateControls();
   overlay.classList.add("hidden");
   logSystem(optMsg || "New match started (seed " + seed + ")");
@@ -1059,7 +1093,9 @@ function finishShot(now, data) {
   explosion = null;
   hitFlashes = [];
   shotAnim = null;
-  hideThinkBubble();
+  if (window.Reel) window.Reel.addTrail(data.shot.points, data.shooter.color);
+  // Reel mode keeps the shooter's formula bubble up until the next turn.
+  if (!(window.Reel && window.Reel.isOn())) hideThinkBubble();
   fadingTraj = {
     points: data.shot.points,
     color: data.shooter.color,
@@ -1098,7 +1134,16 @@ function finishShot(now, data) {
 function animateShotResponse(data) {
   var now = performance.now();
   logTurn(data.shooter, data.func_str, data.shot, data.agent, data.solver_rung);
-  if (window.Broadcast) window.Broadcast.shot(data);
+  if (window.Reel && window.Reel.isOn()) {
+    var a = thinkAnchor;
+    var same =
+      thinkActive &&
+      a !== null &&
+      a.player_index === data.shooter.player_index &&
+      a.soldier_index === data.shooter.soldier_index;
+    if (!same) openThinkBubble(true);
+    showThinkCommit(data.func_str);
+  }
   if (data.start_angle !== null && data.start_angle !== undefined) {
     dialAngle = data.start_angle; // display-only; set on fire (GameData.java:1113)
   }
