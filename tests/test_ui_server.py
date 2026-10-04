@@ -522,6 +522,18 @@ def test_activity_endpoint_via_testclient(client: TestClient) -> None:
     assert body == {"events": [], "next": 0}
 
 
+def test_delta_events_keep_their_event_kind(client: TestClient) -> None:
+    """A delta's own text|thinking kind rides as delta_kind; it must not
+    overwrite the event kind (the UI routes on kind == "delta")."""
+    from ui import server
+
+    server._activity_append("delta", {"kind": "thinking", "text": "hmm"}, "llm:m")
+    events = client.get("/api/activity", params={"since": 0}).json()["events"]
+    assert events[-1]["kind"] == "delta"
+    assert events[-1]["delta_kind"] == "thinking"
+    assert events[-1]["text"] == "hmm"
+
+
 # --- Demo driver swap + thinking bubble plan (G1/G2/G4/G6) ----------------------
 
 

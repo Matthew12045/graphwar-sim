@@ -96,7 +96,12 @@ def _activity_append(kind: str, payload: dict[str, Any], agent: str) -> None:
     """Append one feed event with a monotonic id (the sink LLMAgent calls)."""
     global _activity_next_id
     with _activity_lock:
-        _activity.append({"id": _activity_next_id, "agent": agent, "kind": kind, **payload})
+        entry: dict[str, Any] = {"id": _activity_next_id, "agent": agent, "kind": kind}
+        for key, value in payload.items():
+            # A delta's own "kind" (text|thinking) must not clobber the event
+            # kind ("delta") — it rides as delta_kind.
+            entry["delta_kind" if key == "kind" else key] = value
+        _activity.append(entry)
         _activity_next_id += 1
 
 

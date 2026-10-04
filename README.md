@@ -145,6 +145,11 @@ model name the server uses (`Qwen/Qwen3.8-27B-FP8` above; for Ollama, its tag,
 with `OPENAI_BASE_URL=http://localhost:11434/v1`). Qwen's reasoning streams
 live into the match log; only the final answer is fired.
 
+Tick **Broadcast view** in the playback bar (or open `/?broadcast=1`) for an
+AI-vs-AI presentation suited to screen recording: a scoreboard with each
+side's model, a large caption with the function just fired and HIT/MISS, and
+one live panel per side streaming that side's reasoning.
+
 ## Install
 
 ```bash

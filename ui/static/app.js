@@ -109,6 +109,7 @@ function openThinkBubble() {
 }
 
 function hideThinkBubble() {
+  if (window.Broadcast) window.Broadcast.turnEnded();
   thinkActive = false;
   thinkLines = [];
   if (thinkBubble) thinkBubble.classList.add("hidden");
@@ -242,6 +243,7 @@ function renderActivity(events) {
         logBox.appendChild(deltaLine);
       }
       deltaLine._body.textContent += ev.text;
+      if (window.Broadcast) window.Broadcast.delta(ev.delta_kind, ev.text);
       logBox.scrollTop = logBox.scrollHeight;
       capLogChildren();
       continue;
@@ -288,6 +290,7 @@ function renderActivity(events) {
       feedLine(ev.agent, personaText);
       appendThinkLine(personaText, false);
     } else if (ev.kind === "plan") {
+      if (window.Broadcast) window.Broadcast.note("plan " + ev.target + " (" + ev.n_waypoints + " waypoints)");
       feedLine(ev.agent, "plan " + ev.target + " (" + ev.n_waypoints + " waypoints)");
       appendThinkLine("plan " + ev.target + " (" + ev.n_waypoints + " waypoints)", false);
     } else if (ev.kind === "solve") {
@@ -701,6 +704,7 @@ function applyBoard(newBoard) {
   }
   if (dialAngle === null) dialAngle = 0; // soldier angle starts at 0 (display-only)
   drawCompass();
+  if (window.Broadcast) window.Broadcast.board(board, newBoard.team_modes || teamModes);
 }
 
 function setInputEnabled(enabled) {
@@ -788,6 +792,7 @@ function syncSetupFromServer(data) {
     modelTeam2Input.value = wireToModel(teamModes.team2);
     personaTeam2Sel.value = wireToPersona(teamModes.team2);
     updateModelInputs();
+    if (window.Broadcast && board) window.Broadcast.board(board, teamModes);
   }
   if (typeof data.max_turns === "number") {
     maxTurnsInput.value = data.max_turns;
@@ -891,6 +896,7 @@ function agentTurn() {
   var requestEpoch = epoch;
   var llmTurn = isLLMMode(currentSideMode());
   if (llmTurn) openThinkBubble();
+  if (llmTurn && window.Broadcast) window.Broadcast.turnStart(board.shooter);
   animating = true;
   updateControls();
   startActivityPoll(); // Slice B: live feed while the LLM turn runs
@@ -999,6 +1005,7 @@ function adoptNewBoard(data, optMsg) {
   hideThinkBubble();
   applyBoard(data);
   syncSetupFromServer(data);
+  if (window.Broadcast) window.Broadcast.newMatch(board, teamModes);
   updateControls();
   overlay.classList.add("hidden");
   logSystem(optMsg || "New match started (seed " + seed + ")");
@@ -1091,6 +1098,7 @@ function finishShot(now, data) {
 function animateShotResponse(data) {
   var now = performance.now();
   logTurn(data.shooter, data.func_str, data.shot, data.agent, data.solver_rung);
+  if (window.Broadcast) window.Broadcast.shot(data);
   if (data.start_angle !== null && data.start_angle !== undefined) {
     dialAngle = data.start_angle; // display-only; set on fire (GameData.java:1113)
   }
