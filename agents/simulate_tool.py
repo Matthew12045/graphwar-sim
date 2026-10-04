@@ -132,7 +132,9 @@ def simulate(game: Game, expr: str) -> SimResult:
     team = game.state.current_team()
     shooter = team.current_soldier()
     inverted = team.team == TEAM2
-    result = process_function_range(f, shooter, game.all_soldiers(), game.terrain, inverted)
+    result = process_function_range(
+        f, shooter, game.all_soldiers(), game.terrain, inverted, wrap=game.wraps()
+    )
     enemy_hits, teammate_hits = hit_team_counts(game, result)
     nearest, direction, stop_x, reason = _telemetry(
         game, shooter, inverted, result, hit=enemy_hits > 0 or teammate_hits > 0

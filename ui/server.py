@@ -74,6 +74,7 @@ _team_agents: dict[int, Agent] = {}
 _turns_played: int = 0
 _max_turns: int | None = None
 _banter: bool = False  # reel-mode taunts for llm: sides (NewGameBody.banter)
+_ARENAS: frozenset[str] = frozenset({"classic", "torus"})
 # Slice C cancellation: set by /api/new_game BEFORE it acquires the lock (an
 # in-flight agent turn holds the lock for the length of its LLM loop — setting
 # first is what lets the turn unwind and free it). The fresh match clears the
@@ -134,6 +135,8 @@ class NewGameBody(BaseModel):
     max_turns: int | None = None
     # Reel mode: single-shot LLM sides add a one-line taunt ("say" events).
     banter: bool = False
+    # Arena rules: "classic" (the reference) or "torus" (shots wrap at edges).
+    arena: str = "classic"
 
 
 class SetModesBody(BaseModel):
@@ -212,6 +215,8 @@ def _board_json(game: Game) -> dict[str, Any]:
         # Craters as (x, y, r) — the frontend punches them out in white
         # (do NOT rasterize; same convention as circles).
         "carves": [list(c) for c in game.carves],
+        # Arena rules: "classic" (reference) or "torus" (shots wrap; reel mode).
+        "arena": game.arena,
         "finished": game.finished(),
         "winner": game.winner(),
         "turns_played": _turns_played,
@@ -353,6 +358,12 @@ def new_game(body: NewGameBody | None = None) -> dict[str, Any] | JSONResponse:
     max_turns = body.max_turns if body is not None else None
     global _banter
     _banter = bool(body.banter) if body is not None else False
+    arena = body.arena if body is not None else "classic"
+    if arena not in _ARENAS:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "bad_arena", "detail": f"arena must be one of {sorted(_ARENAS)}"},
+        )
     if max_turns is not None and max_turns < 1:
         return JSONResponse(
             status_code=400,
@@ -380,6 +391,7 @@ def new_game(body: NewGameBody | None = None) -> dict[str, Any] | JSONResponse:
             )
         _seed = seed
         _game = Game.create(seed=seed, num_teams=2, num_soldiers=num_soldiers)
+        _game.arena = arena
         _team_modes = {TEAM1: mode_team1, TEAM2: mode_team2}
         _team_agents = agents_by_team
         _turns_played = 0

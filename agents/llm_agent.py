@@ -235,6 +235,15 @@ slurs). The LAST line must still be the bare expression.\
 
 _SAY_LINE: re.Pattern[str] = re.compile(r"^\s*SAY\s*:\s*(.*?)\s*$", re.IGNORECASE)
 
+# Torus arena (non-reference) override for the HARD RULES band kill.
+_TORUS_NOTE: str = (
+    "ARENA: TORUS (overrides the band rule above): the board wraps. A curve "
+    "leaving the top re-enters at the bottom (and vice versa), and one "
+    "leaving the right edge re-enters on the left. Leaving the band does NOT "
+    "kill the shot; it ends on terrain or after several laps, and it can "
+    "come round and hit your own allies."
+)
+
 _LEADING_Y_EQUALS: re.Pattern[str] = re.compile(r"^y\s*=\s*", re.IGNORECASE)
 _CODE_FENCE: re.Pattern[str] = re.compile(r"^```")
 
@@ -391,6 +400,8 @@ def _turn_message(game: Game, obs: Observation) -> str:
     warning = _muzzle_wall_warning(obs)
     if warning is not None:
         lines.extend(["", warning])
+    if getattr(game, "arena", "classic") == "torus":
+        lines.extend(["", _TORUS_NOTE])
     return "\n".join(lines)
 
 

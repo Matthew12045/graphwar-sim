@@ -137,6 +137,16 @@ def _to_plane_y(values_y: float) -> float:
     return -config.PLANE_LENGTH * values_y / config.PLANE_GAME_LENGTH + _HALF_HEIGHT
 
 
+def _wrap_plane(x: float, y: float) -> tuple[float, float]:
+    """Torus arena: plane coords modulo the plane (non-finite values pass
+    through so the NaN/Inf termination below still fires)."""
+    if math.isfinite(x):
+        x %= config.PLANE_LENGTH
+    if math.isfinite(y):
+        y %= config.PLANE_HEIGHT
+    return x, y
+
+
 def _java_int_cast(value: float) -> int:
     """Java ``(int)`` narrowing of a double (JLS 5.1.3): NaN -> 0, +-Inf
     saturate at Integer.MAX_VALUE / MIN_VALUE. The reference casts the
@@ -185,8 +195,14 @@ def process_function_range(
     soldiers: Sequence[Soldier],
     obstacle: Obstacle,
     inverted: bool,
+    wrap: bool = False,
 ) -> ShotResult:
     """Port of ``processFunctionRange`` (Function.java:173-309).
+
+    ``wrap=True`` is the NON-reference torus arena (reel mode): every plane
+    point is taken modulo the plane, so a curve leaving one edge re-enters on
+    the opposite edge instead of dying out of bounds. The stepping itself is
+    unchanged; with ``wrap=False`` (the default) the port is byte-identical.
 
     Parameters
     ----------
@@ -284,6 +300,8 @@ def process_function_range(
         y = _to_plane_y(ys[i])
         if inverted:
             x = config.PLANE_LENGTH - x
+        if wrap:
+            x, y = _wrap_plane(x, y)
 
         # Hit test (Function.java:252-284): strict <, multi-kill, dedup.
         for s in soldiers:
@@ -327,6 +345,8 @@ def process_function_range(
     # reproduce that asymmetry exactly.
     last_x = _to_plane_x(xs[num_steps - 1])
     last_y = _to_plane_y(ys[num_steps - 1])
+    if wrap:
+        last_x, last_y = _wrap_plane(last_x, last_y)
 
     # Build the plane-coord trajectory (muzzle through last step).
     points: list[tuple[float, float]] = []
@@ -335,6 +355,8 @@ def process_function_range(
         py = _to_plane_y(ys[i])
         if inverted:
             px = config.PLANE_LENGTH - px
+        if wrap:
+            px, py = _wrap_plane(px, py)
         points.append((px, py))
 
     return ShotResult(

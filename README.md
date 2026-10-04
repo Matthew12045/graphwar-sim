@@ -151,7 +151,10 @@ the soldier labels, a speech bubble with each shot's formula, trails that stay
 on the board, crossed-out markers for dead soldiers, and one-line taunts from
 `llm:` sides (sent as `banter: true` on New Match). The **Controls** button
 (or the `c` key) shows the setup panel; set **Soldiers** to 4 for a fuller
-board.
+board. **Arena: Torus (wrap)** is a non-reference rule seen in
+those clips: a curve that leaves one edge re-enters on the opposite edge
+instead of dying (`arena: "torus"` on New Match; the classic arena stays the
+default and byte-identical).
 
 ## Install
 

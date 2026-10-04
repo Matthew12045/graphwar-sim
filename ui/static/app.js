@@ -47,6 +47,7 @@ var personaTeam1Sel = document.getElementById("persona-team1");
 var personaTeam2Sel = document.getElementById("persona-team2");
 var maxTurnsInput = document.getElementById("max-turns");
 var soldiersInput = document.getElementById("num-soldiers");
+var arenaSel = document.getElementById("arena");
 var playPauseBtn = document.getElementById("play-pause");
 var stepBtn = document.getElementById("step");
 var speedSel = document.getElementById("speed");
@@ -565,6 +566,13 @@ function draw(now) {
         pen = false; // shot ended on NaN/Inf (server sends null)
         continue;
       }
+      // Torus arena: a wrap jumps to the opposite edge; lift the pen
+      // instead of drawing a line across the board.
+      if (pen && i > 0 && points[i - 1][0] !== null) {
+        var jx = Math.abs(p[0] - points[i - 1][0]);
+        var jy = Math.abs(p[1] - points[i - 1][1]);
+        if (jx > PLANE_W / 2 || jy > PLANE_H / 2) pen = false;
+      }
       if (!pen) {
         ctx.moveTo(p[0], p[1]);
         pen = true;
@@ -1009,6 +1017,7 @@ function newGame() {
   if (!isNaN(mt) && mt >= 1) body.max_turns = mt;
   var ns = parseInt(soldiersInput.value, 10);
   if (!isNaN(ns) && ns >= 1) body.num_soldiers = ns;
+  body.arena = arenaSel.value;
   body.banter = !!(window.Reel && window.Reel.isOn());
   setPlaying(false);
   postJSON("/api/new_game", body)
@@ -1040,6 +1049,7 @@ function adoptNewBoard(data, optMsg) {
   syncSetupFromServer(data);
   if (window.Reel) window.Reel.newMatch(teamModes);
   if (typeof data.num_soldiers === "number") soldiersInput.value = data.num_soldiers;
+  if (typeof data.arena === "string") arenaSel.value = data.arena;
   updateControls();
   overlay.classList.add("hidden");
   logSystem(optMsg || "New match started (seed " + seed + ")");
