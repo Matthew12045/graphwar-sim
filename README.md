@@ -145,10 +145,13 @@ model name the server uses (`Qwen/Qwen3.8-27B-FP8` above; for Ollama, its tag,
 with `OPENAI_BASE_URL=http://localhost:11434/v1`). Qwen's reasoning streams
 live into the match log; only the final answer is fired.
 
-Tick **Broadcast view** in the playback bar (or open `/?broadcast=1`) for an
-AI-vs-AI presentation suited to screen recording: a scoreboard with each
-side's model, a large caption with the function just fired and HIT/MISS, and
-one live panel per side streaming that side's reasoning.
+Tick **Reel mode** in the playback bar (or open `/?reel=1`) to record an
+AI-vs-AI clip: the classic screen in a vertical 9:16 letterbox, bot names on
+the soldier labels, a speech bubble with each shot's formula, trails that stay
+on the board, crossed-out markers for dead soldiers, and one-line taunts from
+`llm:` sides (sent as `banter: true` on New Match). The **Controls** button
+(or the `c` key) shows the setup panel; set **Soldiers** to 4 for a fuller
+board.
 
 ## Install
 
