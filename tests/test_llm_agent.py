@@ -310,6 +310,8 @@ def test_missing_auth_env_vars_raise_at_construction(
 ) -> None:
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("GRAPHWAR_LLM_PROVIDER", raising=False)
     with pytest.raises(RuntimeError) as excinfo:
         LLMAgent(model="fake-model")
     message = str(excinfo.value)

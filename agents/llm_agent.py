@@ -115,6 +115,7 @@ _RETRYABLE_API_ERROR_NAMES: frozenset[str] = frozenset(
         "ReadError",
         "WriteError",
         "ConnectError",
+        "APITimeoutError",  # the openai SDK's timeout (OpenAI-compatible backend)
     }
 )
 
@@ -375,7 +376,16 @@ def _build_client() -> Any:
     Raises BEFORE any network call when neither token variable is set,
     naming both — a misconfigured agent must fail at construction, never
     mid-match. The token value itself never enters the repo.
+
+    When the environment selects the OpenAI-compatible backend
+    (``OPENAI_BASE_URL`` / ``GRAPHWAR_LLM_PROVIDER=openai``, see
+    :mod:`agents.openai_compat`) the client is that adapter instead — local
+    vLLM / Ollama / LM Studio or any hosted OpenAI-style provider.
     """
+    from .openai_compat import build_openai_client, openai_backend_selected
+
+    if openai_backend_selected():
+        return build_openai_client()
     token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if token is None and api_key is None:
@@ -439,8 +449,17 @@ class LLMAgent:
         # and rounds die at the gateway's ~125s wall; "medium" caps it and
         # rounds conclude reliably. Auto: apply through gateways only —
         # real Anthropic APIs reject unknown body fields.
-        if reasoning_effort is None and os.environ.get("ANTHROPIC_BASE_URL"):
-            reasoning_effort = _REASONING_EFFORT
+        # The OpenAI-compatible backend (local vLLM/Ollama serving Qwen) is
+        # the same reasoning-model case. GRAPHWAR_REASONING_EFFORT overrides
+        # the auto value; "off" sends none (servers that reject the field).
+        if reasoning_effort is None:
+            from .openai_compat import openai_backend_selected
+
+            env_effort = os.environ.get("GRAPHWAR_REASONING_EFFORT", "").strip().lower()
+            if env_effort:
+                reasoning_effort = None if env_effort == "off" else env_effort
+            elif os.environ.get("ANTHROPIC_BASE_URL") or openai_backend_selected():
+                reasoning_effort = _REASONING_EFFORT
         self._reasoning_effort = reasoning_effort
         # Fail at construction on a missing token — never mid-match.
         self._client = client if client is not None else _build_client()
