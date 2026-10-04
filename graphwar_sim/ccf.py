@@ -416,6 +416,86 @@ class _LPRows:
         return cast(csr_matrix, coo.tocsr())
 
 
+def _add_sample_rows_reference(
+    rows: _LPRows,
+    phi: np.ndarray,
+    us: np.ndarray,
+    Lrel: np.ndarray,
+    Hrel: np.ndarray,
+    exempt: np.ndarray,
+    m: float,
+    i_s: int,
+    i_a: int,
+    i_b: int,
+    i_slack0: int,
+) -> None:
+    """The per-sample margin rows, one Python call per entry (the original
+    builder; tests pin :func:`_add_sample_rows` to it)."""
+    for k_idx in np.nonzero(~exempt)[0]:
+        k = int(k_idx)
+        phi_row = phi[k]
+        nzj = np.nonzero(phi_row)[0]
+        uk = float(us[k])
+        rows.add(
+            [(int(j), -float(phi_row[j])) for j in nzj]
+            + [(i_a, -uk), (i_b, -1.0), (i_s, -m), (i_slack0 + k, 1.0)],
+            -float(Lrel[k]),
+        )  # -f(u_k) - m s + slack_k <= -Lrel_k
+        rows.add(
+            [(int(j), float(phi_row[j])) for j in nzj]
+            + [(i_a, uk), (i_b, 1.0), (i_s, -m), (i_slack0 + k, 1.0)],
+            float(Hrel[k]),
+        )  # f(u_k) - m s + slack_k <= Hrel_k
+
+
+def _add_sample_rows(
+    rows: _LPRows,
+    phi: np.ndarray,
+    us: np.ndarray,
+    Lrel: np.ndarray,
+    Hrel: np.ndarray,
+    exempt: np.ndarray,
+    m: float,
+    i_s: int,
+    i_a: int,
+    i_b: int,
+    i_slack0: int,
+) -> None:
+    """Vectorized :func:`_add_sample_rows_reference`: the same rows, entries
+    and right-hand sides, appended with numpy instead of per-entry calls.
+    Per non-exempt sample ``k`` (in order) two rows, lower then upper::
+
+        -phi_k·w - u_k a - b - m s + slack_k <= -Lrel_k
+        +phi_k·w + u_k a + b - m s + slack_k <= +Hrel_k
+    """
+    ks = np.nonzero(~exempt)[0]
+    n = len(ks)
+    if n == 0:
+        return
+    r0 = len(rows.b)
+    P = phi[ks]
+    kk, jj = np.nonzero(P)  # row-major: per sample, ascending j
+    vals = P[kk, jj]
+    u = us[ks].astype(float)
+    lower = r0 + 2 * np.arange(n)
+    upper = lower + 1
+    fixed_cols = np.stack(
+        [np.full(n, i_a), np.full(n, i_b), np.full(n, i_s), i_slack0 + ks], axis=1
+    )
+    lo_fixed = np.stack([-u, np.full(n, -1.0), np.full(n, -m), np.ones(n)], axis=1)
+    hi_fixed = np.stack([u, np.ones(n), np.full(n, -m), np.ones(n)], axis=1)
+    row_ids = np.concatenate([lower[kk], np.repeat(lower, 4), upper[kk], np.repeat(upper, 4)])
+    col_ids = np.concatenate([jj, fixed_cols.ravel(), jj, fixed_cols.ravel()])
+    data = np.concatenate([-vals, lo_fixed.ravel(), vals, hi_fixed.ravel()])
+    rows._rows.extend(row_ids.tolist())
+    rows._cols.extend(col_ids.tolist())
+    rows._vals.extend(data.astype(float).tolist())
+    b = np.empty(2 * n)
+    b[0::2] = -Lrel[ks].astype(float)
+    b[1::2] = Hrel[ks].astype(float)
+    rows.b.extend(b.tolist())
+
+
 def _build_lp(
     centers: np.ndarray,
     phi: np.ndarray,
@@ -463,21 +543,7 @@ def _build_lp(
     rows.add([(i_b, 1.0), (i_ab, -1.0)], 0.0)
     rows.add([(i_b, -1.0), (i_ab, -1.0)], 0.0)
 
-    for k_idx in np.nonzero(~exempt)[0]:
-        k = int(k_idx)
-        phi_row = phi[k]
-        nzj = np.nonzero(phi_row)[0]
-        uk = float(us[k])
-        rows.add(
-            [(int(j), -float(phi_row[j])) for j in nzj]
-            + [(i_a, -uk), (i_b, -1.0), (i_s, -m), (i_slack0 + k, 1.0)],
-            -float(Lrel[k]),
-        )  # -f(u_k) - m s + slack_k <= -Lrel_k
-        rows.add(
-            [(int(j), float(phi_row[j])) for j in nzj]
-            + [(i_a, uk), (i_b, 1.0), (i_s, -m), (i_slack0 + k, 1.0)],
-            float(Hrel[k]),
-        )  # f(u_k) - m s + slack_k <= Hrel_k
+    _add_sample_rows(rows, phi, us, Lrel, Hrel, exempt, m, i_s, i_a, i_b, i_slack0)
     A_ub = rows.matrix()
     b_ub = np.asarray(rows.b, dtype=float)
 

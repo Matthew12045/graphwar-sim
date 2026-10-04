@@ -26,6 +26,7 @@ the specific positions are ``# TUNABLE`` and are not from the source.
 
 from __future__ import annotations
 
+import math
 import random
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -149,13 +150,14 @@ def make_circle_obstacle(
     for cx, cy, r in circles:
         r2 = r * r
         y0, y1 = max(0, cy - r), min(height - 1, cy + r)
-        x0, x1 = max(0, cx - r), min(length - 1, cx + r)
         for y in range(y0, y1 + 1):
             dy = y - cy
-            for x in range(x0, x1 + 1):
-                dx = x - cx
-                if dx * dx + dy * dy <= r2:
-                    grid[y][x] = True
+            # dx*dx + dy*dy <= r2  <=>  |dx| <= isqrt(r2 - dy*dy)  (exact
+            # integer math), so each row is one contiguous run.
+            half = math.isqrt(r2 - dy * dy)
+            x0, x1 = max(0, cx - half), min(length - 1, cx + half)
+            if x0 <= x1:
+                grid[y][x0 : x1 + 1] = [True] * (x1 - x0 + 1)
 
     def collide_point(x: int, y: int) -> bool:
         if x < 0 or x >= length or y < 0 or y >= height:

@@ -96,10 +96,13 @@ class Obstacle:
         x1 = min(length - 1, x + radius)
         for yy in range(y0, y1 + 1):
             dy = yy - y
-            for xx in range(x0, x1 + 1):
-                dx = xx - x
-                if dx * dx + dy * dy <= r2:
-                    self.grid[yy][xx] = False
+            if dy * dy > r2:
+                continue
+            # Same disk test as make_circle_obstacle: one contiguous run per row.
+            half = math.isqrt(r2 - dy * dy)
+            xa, xb = max(x0, x - half), min(x1, x + half)
+            if xa <= xb:
+                self.grid[yy][xa : xb + 1] = [False] * (xb - xa + 1)
 
 
 @dataclass
@@ -271,6 +274,16 @@ def process_function_range(
                 return True
         return False
 
+    radius_squared = config.SOLDIER_RADIUS * config.SOLDIER_RADIUS
+    targets = [
+        (s.x, s.y, s.player_index, s.soldier_index)
+        for s in soldiers
+        if s.alive
+        and not (
+            s.player_index == shooter.player_index and s.soldier_index == shooter.soldier_index
+        )
+    ]
+
     for i in range(1, config.FUNC_MAX_STEPS):
         temp_step_size = step_size
 
@@ -304,20 +317,18 @@ def process_function_range(
             x, y = _wrap_plane(x, y)
 
         # Hit test (Function.java:252-284): strict <, multi-kill, dedup.
-        for s in soldiers:
-            if s.player_index == shooter.player_index and (
-                s.soldier_index == shooter.soldier_index
-            ):
-                continue
-            if s.alive:
-                dist_x = s.x - x
-                dist_y = s.y - y
-                dist_squared = math.pow(dist_x, 2) + math.pow(dist_y, 2)
-                in_radius = dist_squared < config.SOLDIER_RADIUS * config.SOLDIER_RADIUS
-                if in_radius and not player_already_hit(s.player_index, s.soldier_index):
-                    players_hit.append(s.player_index)
-                    soldiers_hit.append(s.soldier_index)
-                    hit_positions.append(i)
+        # ``targets`` is the reference's per-step skip/alive filter hoisted
+        # out of the loop (neither changes during a shot); the distance math
+        # is untouched.
+        for sx, sy, sp, ss in targets:
+            dist_x = sx - x
+            dist_y = sy - y
+            dist_squared = math.pow(dist_x, 2) + math.pow(dist_y, 2)
+            in_radius = dist_squared < radius_squared
+            if in_radius and not player_already_hit(sp, ss):
+                players_hit.append(sp)
+                soldiers_hit.append(ss)
+                hit_positions.append(i)
 
         # Terrain / NaN termination (Function.java:287-297). The reference
         # casts the double plane coords with Java's ``(int)`` narrowing

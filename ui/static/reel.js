@@ -20,6 +20,58 @@
   var trails = []; // [{points, color}]
   var toggle = null;
 
+  var layer = document.createElement("canvas");
+  layer.width = 770; // PLANE_W
+  layer.height = 450; // PLANE_H
+  var layerDirty = true;
+
+  // Polyline with pen-up on null points (NaN/Inf ends) and on torus wraps,
+  // matching app.js's strokePoints.
+  function strokeTrail(lctx, points, color, alpha) {
+    lctx.save();
+    lctx.globalAlpha = alpha;
+    lctx.strokeStyle = color;
+    lctx.lineWidth = 1;
+    lctx.beginPath();
+    var pen = false;
+    var prev = null;
+    for (var i = 0; i < points.length; i++) {
+      var p = points[i];
+      if (p[0] === null || p[1] === null) {
+        pen = false;
+        prev = null;
+        continue;
+      }
+      if (pen && prev && (Math.abs(p[0] - prev[0]) > 385 || Math.abs(p[1] - prev[1]) > 225)) {
+        pen = false;
+      }
+      if (!pen) {
+        lctx.moveTo(p[0], p[1]);
+        pen = true;
+      } else {
+        lctx.lineTo(p[0], p[1]);
+      }
+      prev = p;
+    }
+    lctx.stroke();
+    lctx.restore();
+  }
+
+  function renderLayer() {
+    var lctx = layer.getContext("2d");
+    lctx.clearRect(0, 0, layer.width, layer.height);
+    for (var i = 0; i < trails.length; i++) {
+      var last = i === trails.length - 1;
+      strokeTrail(
+        lctx,
+        trails[i].points,
+        last ? trails[i].color : TRAIL_COLOR,
+        last ? 0.9 : TRAIL_ALPHA,
+      );
+    }
+    layerDirty = false;
+  }
+
   function prettyModel(name) {
     name = name.replace(/^.*\//, ""); // "Qwen/Qwen3.8-27B" -> "Qwen3.8-27B"
     name = name.replace(/[-_:]?(fp8|fp16|bf16|awq|gptq|int4|int8|q\d\w*)$/i, "");
@@ -96,6 +148,7 @@
 
     newMatch: function (m) {
       trails = [];
+      layerDirty = true;
       this.setModes(m);
     },
 
@@ -106,21 +159,17 @@
 
     addTrail: function (points, color) {
       trails.push({ points: points, color: color });
+      layerDirty = true;
     },
 
     // Draw every finished trail of this match (oldest first) under the
-    // in-flight shot. strokePoints is app.js's own polyline helper.
-    drawTrails: function (strokePoints) {
-      if (!on) return;
-      for (var i = 0; i < trails.length; i++) {
-        var last = i === trails.length - 1;
-        strokePoints(
-          trails[i].points,
-          trails[i].points.length,
-          last ? trails[i].color : TRAIL_COLOR,
-          last ? 0.9 : TRAIL_ALPHA,
-        );
-      }
+    // in-flight shot. Trails are rasterized once into an offscreen layer and
+    // blitted each frame, so a long match (or many torus laps of 20k points)
+    // costs one drawImage per frame instead of re-stroking every trail.
+    drawTrails: function (ctx) {
+      if (!on || trails.length === 0) return;
+      if (layerDirty) renderLayer();
+      ctx.drawImage(layer, 0, 0);
     },
 
     // A dead soldier: red circle with a cross through it.

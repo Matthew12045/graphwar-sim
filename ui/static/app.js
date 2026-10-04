@@ -584,7 +584,7 @@ function draw(now) {
     ctx.restore();
   }
 
-  if (window.Reel) window.Reel.drawTrails(strokePoints);
+  if (window.Reel) window.Reel.drawTrails(ctx);
 
   var head = null;
   if (shotAnim) {
